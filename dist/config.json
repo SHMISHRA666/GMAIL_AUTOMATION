@@ -7,5 +7,5 @@
   "daily_send_limit": 100,
   "dry_run_limit": 3,
   "convert_to_pdf": true,
-  "send_mode": "preview"
+  "send_mode": "send"
 }
