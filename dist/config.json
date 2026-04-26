@@ -1,0 +1,11 @@
+{
+  "sender_email": "shubhimishra666@gmail.com",
+  "app_password": "xoua ekyl oowb zxae",
+  "batch_size": 20,
+  "batch_delay_seconds": 60,
+  "per_email_delay_seconds": 3,
+  "daily_send_limit": 100,
+  "dry_run_limit": 3,
+  "convert_to_pdf": true,
+  "send_mode": "preview"
+}

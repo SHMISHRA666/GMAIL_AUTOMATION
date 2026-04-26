@@ -1,0 +1,3 @@
+openpyxl
+pywin32
+pyinstaller
