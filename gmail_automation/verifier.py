@@ -14,6 +14,9 @@ class DocumentVerifier:
         "Address of Vendor/customer",
         "INR\ufffd\ufffd\ufffd\ufffd\ufffd..",
         "INR\u2026\u2026\u2026\u2026\u2026..",
+        "INR ---------------------------",
+        "INR --------------",
+        "INR -------------------",
         "March 31, 2025",
         "31st March 2025",
     ]

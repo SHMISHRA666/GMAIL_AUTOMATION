@@ -15,6 +15,8 @@ TEMPLATE_FILES = {
     "mail_template": "mail_template.docx",
 }
 
+RENDERER_VERSION = "renderer-v4"
+
 
 class TemplateRepository:
     def __init__(self) -> None:
@@ -22,6 +24,7 @@ class TemplateRepository:
 
     def version(self) -> str:
         digest = hashlib.sha256()
+        digest.update(RENDERER_VERSION.encode("utf-8"))
         for name in sorted(TEMPLATE_FILES):
             digest.update(name.encode("utf-8"))
             digest.update(self.load_docx_template(name))

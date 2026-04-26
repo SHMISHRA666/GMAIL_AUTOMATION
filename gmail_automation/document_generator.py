@@ -24,7 +24,6 @@ class DocumentGenerator:
     def generate(self, row: ConfirmationRow, templates: TemplateRepository) -> DocumentResult:
         party_dir = self.generated_dir / _safe_name(row.row_id)
         party_dir.mkdir(parents=True, exist_ok=True)
-        replacements = self._replacements(row)
         docx_paths: list[Path] = []
         pdf_paths: list[Path] = []
         warnings: list[str] = []
@@ -32,7 +31,7 @@ class DocumentGenerator:
         try:
             for template_name, output_name in self.DOC_TEMPLATES:
                 template_bytes = templates.load_docx_template(template_name)
-                rendered = replace_docx_text(template_bytes, replacements)
+                rendered = replace_docx_text(template_bytes, self._replacements(row, template_name))
                 docx_path = party_dir / f"{_safe_name(row.row_id)}_{output_name}.docx"
                 docx_path.write_bytes(rendered)
                 docx_paths.append(docx_path)
@@ -54,10 +53,10 @@ class DocumentGenerator:
             warnings=warnings,
         )
 
-    def _replacements(self, row: ConfirmationRow) -> dict[str, str]:
+    def _replacements(self, row: ConfirmationRow, template_name: str) -> dict[str, str]:
         balance_sentence = f"{row.balance_nature} of INR {row.balance}".strip()
-        return {
-            "Date:": f"Date: {row.letter_date}",
+        balance_text = f"{row.balance} {row.balance_nature}".strip()
+        replacements = {
             "Name of Vendor/customer": row.party_name,
             "Address of Vendor/customer": row.address,
             "31st March 2026": row.balance_as_on_date,
@@ -70,7 +69,13 @@ class DocumentGenerator:
             "INR\u2026\u2026\u2026\u2026\u2026..": f"INR {row.balance} {row.balance_nature}",
             "receivable /payable balance from/to you of INR\ufffd\ufffd\ufffd\ufffd\ufffd..": balance_sentence,
             "receivable /payable balance from/to you of INR\u2026\u2026\u2026\u2026\u2026..": balance_sentence,
+            "INR ---------------------------": f"INR {balance_text}",
+            "INR -------------------": f"INR {balance_text}",
+            "INR --------------": f"INR {balance_text}",
         }
+        if template_name != "reply_form":
+            replacements["Date:"] = f"Date: {row.letter_date}"
+        return replacements
 
     def _convert_to_pdf(self, docx_path: Path, pdf_path: Path) -> None:
         try:
