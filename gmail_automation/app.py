@@ -37,7 +37,7 @@ class GmailConfirmationApp:
         self.logger.info(None, "startup", "Starting Gmail confirmation automation", {"mode": self.mode})
         try:
             self._startup_validation()
-            if self.mode in {"validate", "preview", "generate", "all", "send"}:
+            if self.mode in {"preview", "generate", "all", "send"}:
                 self._generate_and_verify()
             if self.mode in {"send", "all"}:
                 self._send_batches()
@@ -56,24 +56,11 @@ class GmailConfirmationApp:
         errors = self.store.validate()
         template_errors = self.templates.validate_placeholders(
             {
-                "PartyId",
-                "Party",
-                "Name",
-                "ContactFirstName",
-                "ContactLastName",
-                "To Email",
-                "Email",
-                "CC",
-                "Subject",
+                "S.No.",
+                "Party Type",
+                "Party Name",
+                "Email To(Address)",
                 "Balance",
-                "BalanceNature",
-                "CompanyName",
-                "Address",
-                "Phone",
-                "BalanceAsOnDate",
-                "LetterDate",
-                "AuditorReplyEmail",
-                "File Path Locations",
             }
         )
         errors.extend(template_errors)
@@ -149,13 +136,13 @@ class GmailConfirmationApp:
         if not row.row_id:
             missing.append("PartyId")
         if not row.email:
-            missing.append("To Email")
+            missing.append("Email To(Address)")
         if not row.subject:
             missing.append("Subject")
         if not row.party_name:
-            missing.append("Name")
-        if not row.address:
-            missing.append("Address")
+            missing.append("Party Name")
+        if not row.balance:
+            missing.append("Balance")
         if missing:
             raise ValidationError(f"Missing required fields: {', '.join(missing)}")
         if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", row.email):
@@ -176,7 +163,7 @@ class GmailConfirmationApp:
         return DocumentResult(
             docx_paths=row.state.generated_docx_paths,
             pdf_paths=row.state.generated_pdf_paths,
-            extra_attachment_paths=row.extra_attachment_paths,
+            extra_attachment_paths=[self.templates.materialize_static_authorisation_pdf(self.work_dir)],
             created_at=row.state.attachment_created_at,
             template_version=row.state.template_version,
             attachment_hash=row.state.generated_attachment_hash,
@@ -194,7 +181,7 @@ class GmailConfirmationApp:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Gmail balance confirmation automation")
-    parser.add_argument("--master", default="Excel .xlsx", help="Path to master Excel workbook")
+    parser.add_argument("--master", default="Information for External Balance Confirmations (1).xlsx", help="Path to master Excel workbook")
     parser.add_argument("--tracking", default="", help="Optional tracking workbook path")
     parser.add_argument("--config", default="config.json", help="Path to config JSON")
     parser.add_argument("--mode", choices=["validate", "preview", "generate", "send", "track", "all"], default="preview")

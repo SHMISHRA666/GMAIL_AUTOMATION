@@ -11,9 +11,8 @@ from .templates import TemplateRepository
 
 class DocumentGenerator:
     DOC_TEMPLATES = [
-        ("authorisation_letter", "Authorisation_Letter"),
-        ("balance_confirmation_letter", "Balance_Confirmation_Letter"),
-        ("reply_form", "Reply_Form"),
+        ("balance_confirmation_letter", "Balance confirmation letter.docx"),
+        ("vendor_reply_form", "On Vendor letter.docx"),
     ]
 
     def __init__(self, work_dir: Path, convert_to_pdf: bool = True) -> None:
@@ -30,9 +29,8 @@ class DocumentGenerator:
 
         try:
             for template_name, output_name in self.DOC_TEMPLATES:
-                template_bytes = templates.load_docx_template(template_name)
-                rendered = replace_docx_text(template_bytes, self._replacements(row, template_name))
-                docx_path = party_dir / f"{_safe_name(row.row_id)}_{output_name}.docx"
+                rendered = replace_docx_text(templates.load_docx_template(template_name), self._replacements(row))
+                docx_path = party_dir / output_name
                 docx_path.write_bytes(rendered)
                 docx_paths.append(docx_path)
                 if self.convert_to_pdf:
@@ -42,40 +40,23 @@ class DocumentGenerator:
         except Exception as exc:
             raise DocumentGenerationError(str(exc)) from exc
 
-        hash_value = self._hash_files(pdf_paths or docx_paths)
+        static_pdf_path = templates.materialize_static_authorisation_pdf(self.work_dir)
+        hash_value = self._hash_files((pdf_paths or docx_paths) + [static_pdf_path])
         return DocumentResult(
             docx_paths=docx_paths,
             pdf_paths=pdf_paths,
-            extra_attachment_paths=row.extra_attachment_paths,
+            extra_attachment_paths=[static_pdf_path],
             created_at=now_text(),
             template_version=templates.version(),
             attachment_hash=hash_value,
             warnings=warnings,
         )
 
-    def _replacements(self, row: ConfirmationRow, template_name: str) -> dict[str, str]:
-        balance_sentence = f"{row.balance_nature} of INR {row.balance}".strip()
-        balance_text = f"{row.balance} {row.balance_nature}".strip()
-        replacements = {
-            "Name of Vendor/customer": row.party_name,
-            "Address of Vendor/customer": row.address,
-            "31st March 2026": row.balance_as_on_date,
-            "31st March,2026": row.balance_as_on_date,
-            "31st March 2025": row.balance_as_on_date,
-            "March 31, 2025": row.balance_as_on_date,
-            "Purple United Sales Limited": row.company_name,
-            "ghanshyam@ngmks.in": row.auditor_reply_email,
-            "INR\ufffd\ufffd\ufffd\ufffd\ufffd..": f"INR {row.balance} {row.balance_nature}",
-            "INR\u2026\u2026\u2026\u2026\u2026..": f"INR {row.balance} {row.balance_nature}",
-            "receivable /payable balance from/to you of INR\ufffd\ufffd\ufffd\ufffd\ufffd..": balance_sentence,
-            "receivable /payable balance from/to you of INR\u2026\u2026\u2026\u2026\u2026..": balance_sentence,
-            "INR ---------------------------": f"INR {balance_text}",
-            "INR -------------------": f"INR {balance_text}",
-            "INR --------------": f"INR {balance_text}",
+    def _replacements(self, row: ConfirmationRow) -> dict[str, str]:
+        return {
+            "\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026..(Name of Vendor/Customer)": row.party_name,
+            "8,75,000.00": row.balance,
         }
-        if template_name != "reply_form":
-            replacements["Date:"] = f"Date: {row.letter_date}"
-        return replacements
 
     def _convert_to_pdf(self, docx_path: Path, pdf_path: Path) -> None:
         try:

@@ -53,6 +53,8 @@ class GmailSender:
     def _render_body(self, row: ConfirmationRow, mail_template: MailTemplate) -> str:
         body = row.mail_body_override or mail_template.body_template_text
         replacements = {
+            "{party_name}": row.party_name,
+            "{amount}": row.balance,
             "{{First Name}}": row.contact_first_name,
             "{{Last Name}}": row.contact_last_name,
             "March 31, 2025": row.balance_as_on_date,

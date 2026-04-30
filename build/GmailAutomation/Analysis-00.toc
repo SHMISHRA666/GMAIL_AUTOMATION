@@ -22,21 +22,21 @@
  {},
  0,
  [],
- [('gmail_automation\\resources\\authorisation_letter.docx',
+ [('gmail_automation\\resources\\Authorisation for Direct Balance '
+   'Confirmation.pdf',
    'C:\\My '
-   'data\\resume_learning_material\\resume\\Nitin_Work\\Gmail_Automation\\gmail_automation\\resources\\authorisation_letter.docx',
+   'data\\resume_learning_material\\resume\\Nitin_Work\\Gmail_Automation\\gmail_automation\\resources\\Authorisation '
+   'for Direct Balance Confirmation.pdf',
    'DATA'),
-  ('gmail_automation\\resources\\balance_confirmation_letter.docx',
+  ('gmail_automation\\resources\\Balance confirmation letter.docx',
    'C:\\My '
-   'data\\resume_learning_material\\resume\\Nitin_Work\\Gmail_Automation\\gmail_automation\\resources\\balance_confirmation_letter.docx',
+   'data\\resume_learning_material\\resume\\Nitin_Work\\Gmail_Automation\\gmail_automation\\resources\\Balance '
+   'confirmation letter.docx',
    'DATA'),
-  ('gmail_automation\\resources\\mail_template.docx',
+  ('gmail_automation\\resources\\On Vendor letter.docx',
    'C:\\My '
-   'data\\resume_learning_material\\resume\\Nitin_Work\\Gmail_Automation\\gmail_automation\\resources\\mail_template.docx',
-   'DATA'),
-  ('gmail_automation\\resources\\reply_form.docx',
-   'C:\\My '
-   'data\\resume_learning_material\\resume\\Nitin_Work\\Gmail_Automation\\gmail_automation\\resources\\reply_form.docx',
+   'data\\resume_learning_material\\resume\\Nitin_Work\\Gmail_Automation\\gmail_automation\\resources\\On '
+   'Vendor letter.docx',
    'DATA')],
  '3.13.1 (tags/v3.13.1:0671451, Dec  3 2024, 19:06:28) [MSC v.1942 64 bit '
  '(AMD64)]',
@@ -751,17 +751,17 @@
    'C:\\My '
    'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\win32com\\universal.py',
    'PYMODULE'),
-  ('stringprep',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\stringprep.py',
+  ('tracemalloc',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\tracemalloc.py',
    'PYMODULE'),
   ('_py_abc',
    'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\_py_abc.py',
    'PYMODULE'),
+  ('stringprep',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\stringprep.py',
+   'PYMODULE'),
   ('_colorize',
    'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\_colorize.py',
-   'PYMODULE'),
-  ('tracemalloc',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\tracemalloc.py',
    'PYMODULE'),
   ('gmail_automation.app',
    'C:\\My '
@@ -3539,12 +3539,17 @@
    'C:\\My '
    'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\lxml\\builder.cp313-win_amd64.pyd',
    'EXTENSION'),
-  ('api-ms-win-crt-string-l1-1-0.dll',
+  ('api-ms-win-crt-process-l1-1-0.dll',
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-crt-string-l1-1-0.dll',
+   'Toolkit\\api-ms-win-crt-process-l1-1-0.dll',
    'BINARY'),
-  ('VCRUNTIME140.dll',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\VCRUNTIME140.dll',
+  ('api-ms-win-crt-runtime-l1-1-0.dll',
+   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
+   'Toolkit\\api-ms-win-crt-runtime-l1-1-0.dll',
+   'BINARY'),
+  ('api-ms-win-crt-math-l1-1-0.dll',
+   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
+   'Toolkit\\api-ms-win-crt-math-l1-1-0.dll',
    'BINARY'),
   ('api-ms-win-crt-filesystem-l1-1-0.dll',
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
@@ -3554,9 +3559,9 @@
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
    'Toolkit\\api-ms-win-crt-locale-l1-1-0.dll',
    'BINARY'),
-  ('api-ms-win-crt-math-l1-1-0.dll',
+  ('api-ms-win-crt-string-l1-1-0.dll',
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-crt-math-l1-1-0.dll',
+   'Toolkit\\api-ms-win-crt-string-l1-1-0.dll',
    'BINARY'),
   ('api-ms-win-crt-heap-l1-1-0.dll',
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
@@ -3566,21 +3571,8 @@
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
    'Toolkit\\api-ms-win-crt-conio-l1-1-0.dll',
    'BINARY'),
-  ('api-ms-win-crt-convert-l1-1-0.dll',
-   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-crt-convert-l1-1-0.dll',
-   'BINARY'),
-  ('api-ms-win-crt-runtime-l1-1-0.dll',
-   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-crt-runtime-l1-1-0.dll',
-   'BINARY'),
-  ('api-ms-win-crt-process-l1-1-0.dll',
-   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-crt-process-l1-1-0.dll',
-   'BINARY'),
-  ('api-ms-win-crt-environment-l1-1-0.dll',
-   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-crt-environment-l1-1-0.dll',
+  ('VCRUNTIME140.dll',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\VCRUNTIME140.dll',
    'BINARY'),
   ('api-ms-win-crt-time-l1-1-0.dll',
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
@@ -3589,6 +3581,14 @@
   ('api-ms-win-crt-stdio-l1-1-0.dll',
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
    'Toolkit\\api-ms-win-crt-stdio-l1-1-0.dll',
+   'BINARY'),
+  ('api-ms-win-crt-convert-l1-1-0.dll',
+   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
+   'Toolkit\\api-ms-win-crt-convert-l1-1-0.dll',
+   'BINARY'),
+  ('api-ms-win-crt-environment-l1-1-0.dll',
+   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
+   'Toolkit\\api-ms-win-crt-environment-l1-1-0.dll',
    'BINARY'),
   ('VCRUNTIME140_1.dll',
    'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\VCRUNTIME140_1.dll',
@@ -3622,61 +3622,41 @@
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
    'Toolkit\\api-ms-win-crt-multibyte-l1-1-0.dll',
    'BINARY'),
-  ('api-ms-win-core-console-l1-1-0.dll',
+  ('api-ms-win-core-debug-l1-1-0.dll',
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-core-console-l1-1-0.dll',
+   'Toolkit\\api-ms-win-core-debug-l1-1-0.dll',
    'BINARY'),
-  ('api-ms-win-core-rtlsupport-l1-1-0.dll',
+  ('api-ms-win-core-errorhandling-l1-1-0.dll',
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-core-rtlsupport-l1-1-0.dll',
+   'Toolkit\\api-ms-win-core-errorhandling-l1-1-0.dll',
    'BINARY'),
-  ('api-ms-win-core-processthreads-l1-1-1.dll',
+  ('api-ms-win-core-datetime-l1-1-0.dll',
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-core-processthreads-l1-1-1.dll',
-   'BINARY'),
-  ('api-ms-win-core-file-l1-2-0.dll',
-   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-core-file-l1-2-0.dll',
-   'BINARY'),
-  ('api-ms-win-core-timezone-l1-1-0.dll',
-   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-core-timezone-l1-1-0.dll',
-   'BINARY'),
-  ('api-ms-win-core-file-l1-1-0.dll',
-   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-core-file-l1-1-0.dll',
-   'BINARY'),
-  ('api-ms-win-core-namedpipe-l1-1-0.dll',
-   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-core-namedpipe-l1-1-0.dll',
-   'BINARY'),
-  ('api-ms-win-core-heap-l1-1-0.dll',
-   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-core-heap-l1-1-0.dll',
+   'Toolkit\\api-ms-win-core-datetime-l1-1-0.dll',
    'BINARY'),
   ('api-ms-win-core-synch-l1-2-0.dll',
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
    'Toolkit\\api-ms-win-core-synch-l1-2-0.dll',
    'BINARY'),
-  ('api-ms-win-core-file-l2-1-0.dll',
+  ('api-ms-win-core-rtlsupport-l1-1-0.dll',
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-core-file-l2-1-0.dll',
-   'BINARY'),
-  ('api-ms-win-core-debug-l1-1-0.dll',
-   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-core-debug-l1-1-0.dll',
-   'BINARY'),
-  ('api-ms-win-core-interlocked-l1-1-0.dll',
-   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-core-interlocked-l1-1-0.dll',
-   'BINARY'),
-  ('api-ms-win-core-profile-l1-1-0.dll',
-   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-core-profile-l1-1-0.dll',
+   'Toolkit\\api-ms-win-core-rtlsupport-l1-1-0.dll',
    'BINARY'),
   ('api-ms-win-core-libraryloader-l1-1-0.dll',
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
    'Toolkit\\api-ms-win-core-libraryloader-l1-1-0.dll',
+   'BINARY'),
+  ('api-ms-win-core-string-l1-1-0.dll',
+   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
+   'Toolkit\\api-ms-win-core-string-l1-1-0.dll',
+   'BINARY'),
+  ('api-ms-win-core-util-l1-1-0.dll',
+   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
+   'Toolkit\\api-ms-win-core-util-l1-1-0.dll',
+   'BINARY'),
+  ('api-ms-win-core-profile-l1-1-0.dll',
+   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
+   'Toolkit\\api-ms-win-core-profile-l1-1-0.dll',
    'BINARY'),
   ('api-ms-win-core-sysinfo-l1-1-0.dll',
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
@@ -3686,139 +3666,115 @@
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
    'Toolkit\\api-ms-win-core-synch-l1-1-0.dll',
    'BINARY'),
-  ('api-ms-win-core-memory-l1-1-0.dll',
-   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-core-memory-l1-1-0.dll',
-   'BINARY'),
-  ('api-ms-win-core-util-l1-1-0.dll',
-   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-core-util-l1-1-0.dll',
-   'BINARY'),
-  ('api-ms-win-core-errorhandling-l1-1-0.dll',
-   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-core-errorhandling-l1-1-0.dll',
-   'BINARY'),
   ('api-ms-win-core-processenvironment-l1-1-0.dll',
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
    'Toolkit\\api-ms-win-core-processenvironment-l1-1-0.dll',
    'BINARY'),
-  ('api-ms-win-core-datetime-l1-1-0.dll',
+  ('api-ms-win-core-heap-l1-1-0.dll',
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-core-datetime-l1-1-0.dll',
+   'Toolkit\\api-ms-win-core-heap-l1-1-0.dll',
+   'BINARY'),
+  ('api-ms-win-core-handle-l1-1-0.dll',
+   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
+   'Toolkit\\api-ms-win-core-handle-l1-1-0.dll',
    'BINARY'),
   ('api-ms-win-core-processthreads-l1-1-0.dll',
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
    'Toolkit\\api-ms-win-core-processthreads-l1-1-0.dll',
    'BINARY'),
-  ('api-ms-win-core-string-l1-1-0.dll',
+  ('api-ms-win-core-memory-l1-1-0.dll',
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-core-string-l1-1-0.dll',
+   'Toolkit\\api-ms-win-core-memory-l1-1-0.dll',
+   'BINARY'),
+  ('api-ms-win-core-console-l1-1-0.dll',
+   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
+   'Toolkit\\api-ms-win-core-console-l1-1-0.dll',
+   'BINARY'),
+  ('api-ms-win-core-interlocked-l1-1-0.dll',
+   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
+   'Toolkit\\api-ms-win-core-interlocked-l1-1-0.dll',
+   'BINARY'),
+  ('api-ms-win-core-file-l1-1-0.dll',
+   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
+   'Toolkit\\api-ms-win-core-file-l1-1-0.dll',
+   'BINARY'),
+  ('api-ms-win-core-file-l2-1-0.dll',
+   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
+   'Toolkit\\api-ms-win-core-file-l2-1-0.dll',
+   'BINARY'),
+  ('api-ms-win-core-file-l1-2-0.dll',
+   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
+   'Toolkit\\api-ms-win-core-file-l1-2-0.dll',
+   'BINARY'),
+  ('api-ms-win-core-timezone-l1-1-0.dll',
+   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
+   'Toolkit\\api-ms-win-core-timezone-l1-1-0.dll',
+   'BINARY'),
+  ('api-ms-win-core-processthreads-l1-1-1.dll',
+   'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
+   'Toolkit\\api-ms-win-core-processthreads-l1-1-1.dll',
    'BINARY'),
   ('api-ms-win-core-localization-l1-2-0.dll',
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
    'Toolkit\\api-ms-win-core-localization-l1-2-0.dll',
    'BINARY'),
-  ('api-ms-win-core-handle-l1-1-0.dll',
+  ('api-ms-win-core-namedpipe-l1-1-0.dll',
    'C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance '
-   'Toolkit\\api-ms-win-core-handle-l1-1-0.dll',
+   'Toolkit\\api-ms-win-core-namedpipe-l1-1-0.dll',
    'BINARY')],
  [],
  [],
- [('gmail_automation\\resources\\authorisation_letter.docx',
+ [('gmail_automation\\resources\\Authorisation for Direct Balance '
+   'Confirmation.pdf',
    'C:\\My '
-   'data\\resume_learning_material\\resume\\Nitin_Work\\Gmail_Automation\\gmail_automation\\resources\\authorisation_letter.docx',
+   'data\\resume_learning_material\\resume\\Nitin_Work\\Gmail_Automation\\gmail_automation\\resources\\Authorisation '
+   'for Direct Balance Confirmation.pdf',
    'DATA'),
-  ('gmail_automation\\resources\\balance_confirmation_letter.docx',
+  ('gmail_automation\\resources\\Balance confirmation letter.docx',
    'C:\\My '
-   'data\\resume_learning_material\\resume\\Nitin_Work\\Gmail_Automation\\gmail_automation\\resources\\balance_confirmation_letter.docx',
+   'data\\resume_learning_material\\resume\\Nitin_Work\\Gmail_Automation\\gmail_automation\\resources\\Balance '
+   'confirmation letter.docx',
    'DATA'),
-  ('gmail_automation\\resources\\mail_template.docx',
+  ('gmail_automation\\resources\\On Vendor letter.docx',
    'C:\\My '
-   'data\\resume_learning_material\\resume\\Nitin_Work\\Gmail_Automation\\gmail_automation\\resources\\mail_template.docx',
-   'DATA'),
-  ('gmail_automation\\resources\\reply_form.docx',
-   'C:\\My '
-   'data\\resume_learning_material\\resume\\Nitin_Work\\Gmail_Automation\\gmail_automation\\resources\\reply_form.docx',
-   'DATA'),
-  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_schematron_skeleton_for_xslt1.xsl',
-   'C:\\My '
-   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_schematron_skeleton_for_xslt1.xsl',
-   'DATA'),
-  ('lxml\\isoschematron\\resources\\xsl\\RNG2Schtrn.xsl',
-   'C:\\My '
-   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\RNG2Schtrn.xsl',
-   'DATA'),
-  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\readme.txt',
-   'C:\\My '
-   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\readme.txt',
-   'DATA'),
-  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_svrl_for_xslt1.xsl',
-   'C:\\My '
-   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_svrl_for_xslt1.xsl',
-   'DATA'),
-  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_abstract_expand.xsl',
-   'C:\\My '
-   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_abstract_expand.xsl',
-   'DATA'),
-  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_dsdl_include.xsl',
-   'C:\\My '
-   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_dsdl_include.xsl',
-   'DATA'),
-  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_schematron_message.xsl',
-   'C:\\My '
-   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_schematron_message.xsl',
+   'data\\resume_learning_material\\resume\\Nitin_Work\\Gmail_Automation\\gmail_automation\\resources\\On '
+   'Vendor letter.docx',
    'DATA'),
   ('lxml\\isoschematron\\resources\\rng\\iso-schematron.rng',
    'C:\\My '
    'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\lxml\\isoschematron\\resources\\rng\\iso-schematron.rng',
    'DATA'),
+  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_abstract_expand.xsl',
+   'C:\\My '
+   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_abstract_expand.xsl',
+   'DATA'),
+  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_schematron_message.xsl',
+   'C:\\My '
+   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_schematron_message.xsl',
+   'DATA'),
+  ('lxml\\isoschematron\\resources\\xsl\\RNG2Schtrn.xsl',
+   'C:\\My '
+   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\RNG2Schtrn.xsl',
+   'DATA'),
+  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_dsdl_include.xsl',
+   'C:\\My '
+   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_dsdl_include.xsl',
+   'DATA'),
+  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_schematron_skeleton_for_xslt1.xsl',
+   'C:\\My '
+   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_schematron_skeleton_for_xslt1.xsl',
+   'DATA'),
+  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\readme.txt',
+   'C:\\My '
+   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\readme.txt',
+   'DATA'),
   ('lxml\\isoschematron\\resources\\xsl\\XSD2Schtrn.xsl',
    'C:\\My '
    'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\XSD2Schtrn.xsl',
    'DATA'),
-  ('pyreadline3-3.5.4.dist-info\\METADATA',
+  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_svrl_for_xslt1.xsl',
    'C:\\My '
-   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\pyreadline3-3.5.4.dist-info\\METADATA',
-   'DATA'),
-  ('numpy-2.2.4.dist-info\\WHEEL',
-   'C:\\My '
-   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\numpy-2.2.4.dist-info\\WHEEL',
-   'DATA'),
-  ('pyreadline3-3.5.4.dist-info\\WHEEL',
-   'C:\\My '
-   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\pyreadline3-3.5.4.dist-info\\WHEEL',
-   'DATA'),
-  ('numpy-2.2.4.dist-info\\LICENSE.txt',
-   'C:\\My '
-   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\numpy-2.2.4.dist-info\\LICENSE.txt',
-   'DATA'),
-  ('pyreadline3-3.5.4.dist-info\\RECORD',
-   'C:\\My '
-   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\pyreadline3-3.5.4.dist-info\\RECORD',
-   'DATA'),
-  ('pyreadline3-3.5.4.dist-info\\INSTALLER',
-   'C:\\My '
-   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\pyreadline3-3.5.4.dist-info\\INSTALLER',
-   'DATA'),
-  ('pyreadline3-3.5.4.dist-info\\top_level.txt',
-   'C:\\My '
-   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\pyreadline3-3.5.4.dist-info\\top_level.txt',
-   'DATA'),
-  ('pyreadline3-3.5.4.dist-info\\LICENSE.md',
-   'C:\\My '
-   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\pyreadline3-3.5.4.dist-info\\LICENSE.md',
-   'DATA'),
-  ('numpy-2.2.4.dist-info\\DELVEWHEEL',
-   'C:\\My '
-   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\numpy-2.2.4.dist-info\\DELVEWHEEL',
-   'DATA'),
-  ('numpy-2.2.4.dist-info\\entry_points.txt',
-   'C:\\My '
-   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\numpy-2.2.4.dist-info\\entry_points.txt',
-   'DATA'),
-  ('numpy-2.2.4.dist-info\\INSTALLER',
-   'C:\\My '
-   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\numpy-2.2.4.dist-info\\INSTALLER',
+   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_svrl_for_xslt1.xsl',
    'DATA'),
   ('numpy-2.2.4.dist-info\\RECORD',
    'C:\\My '
@@ -3828,24 +3784,77 @@
    'C:\\My '
    'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\numpy-2.2.4.dist-info\\METADATA',
    'DATA'),
+  ('numpy-2.2.4.dist-info\\entry_points.txt',
+   'C:\\My '
+   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\numpy-2.2.4.dist-info\\entry_points.txt',
+   'DATA'),
+  ('pyreadline3-3.5.4.dist-info\\METADATA',
+   'C:\\My '
+   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\pyreadline3-3.5.4.dist-info\\METADATA',
+   'DATA'),
+  ('pyreadline3-3.5.4.dist-info\\INSTALLER',
+   'C:\\My '
+   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\pyreadline3-3.5.4.dist-info\\INSTALLER',
+   'DATA'),
+  ('pyreadline3-3.5.4.dist-info\\top_level.txt',
+   'C:\\My '
+   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\pyreadline3-3.5.4.dist-info\\top_level.txt',
+   'DATA'),
+  ('numpy-2.2.4.dist-info\\DELVEWHEEL',
+   'C:\\My '
+   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\numpy-2.2.4.dist-info\\DELVEWHEEL',
+   'DATA'),
+  ('numpy-2.2.4.dist-info\\LICENSE.txt',
+   'C:\\My '
+   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\numpy-2.2.4.dist-info\\LICENSE.txt',
+   'DATA'),
+  ('numpy-2.2.4.dist-info\\INSTALLER',
+   'C:\\My '
+   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\numpy-2.2.4.dist-info\\INSTALLER',
+   'DATA'),
+  ('pyreadline3-3.5.4.dist-info\\LICENSE.md',
+   'C:\\My '
+   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\pyreadline3-3.5.4.dist-info\\LICENSE.md',
+   'DATA'),
+  ('pyreadline3-3.5.4.dist-info\\RECORD',
+   'C:\\My '
+   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\pyreadline3-3.5.4.dist-info\\RECORD',
+   'DATA'),
+  ('numpy-2.2.4.dist-info\\WHEEL',
+   'C:\\My '
+   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\numpy-2.2.4.dist-info\\WHEEL',
+   'DATA'),
+  ('pyreadline3-3.5.4.dist-info\\WHEEL',
+   'C:\\My '
+   'data\\resume_learning_material\\resume\\EAG_V1\\S4\\.venv\\Lib\\site-packages\\pyreadline3-3.5.4.dist-info\\WHEEL',
+   'DATA'),
   ('base_library.zip',
    'C:\\My '
    'data\\resume_learning_material\\resume\\Nitin_Work\\Gmail_Automation\\build\\GmailAutomation\\base_library.zip',
    'DATA')],
- [('locale',
+ [('weakref',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\weakref.py',
+   'PYMODULE'),
+  ('locale',
    'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\locale.py',
    'PYMODULE'),
-  ('_collections_abc',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\_collections_abc.py',
+  ('sre_parse',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\sre_parse.py',
    'PYMODULE'),
-  ('posixpath',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\posixpath.py',
+  ('functools',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\functools.py',
    'PYMODULE'),
-  ('io',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\io.py',
+  ('reprlib',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\reprlib.py',
    'PYMODULE'),
-  ('stat',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\stat.py',
+  ('sre_compile',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\sre_compile.py',
+   'PYMODULE'),
+  ('linecache',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\linecache.py',
+   'PYMODULE'),
+  ('keyword',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\keyword.py',
    'PYMODULE'),
   ('re._parser',
    'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\re\\_parser.py',
@@ -3862,14 +3871,35 @@
   ('re',
    'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\re\\__init__.py',
    'PYMODULE'),
-  ('functools',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\functools.py',
+  ('posixpath',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\posixpath.py',
    'PYMODULE'),
-  ('sre_parse',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\sre_parse.py',
+  ('_collections_abc',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\_collections_abc.py',
    'PYMODULE'),
-  ('enum',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\enum.py',
+  ('ntpath',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\ntpath.py',
+   'PYMODULE'),
+  ('collections',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\collections\\__init__.py',
+   'PYMODULE'),
+  ('warnings',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\warnings.py',
+   'PYMODULE'),
+  ('operator',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\operator.py',
+   'PYMODULE'),
+  ('abc',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\abc.py',
+   'PYMODULE'),
+  ('_weakrefset',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\_weakrefset.py',
+   'PYMODULE'),
+  ('os',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\os.py',
+   'PYMODULE'),
+  ('genericpath',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\genericpath.py',
    'PYMODULE'),
   ('encodings.zlib_codec',
    'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\encodings\\zlib_codec.py',
@@ -4237,60 +4267,30 @@
   ('encodings',
    'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\encodings\\__init__.py',
    'PYMODULE'),
-  ('linecache',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\linecache.py',
+  ('types',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\types.py',
+   'PYMODULE'),
+  ('stat',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\stat.py',
    'PYMODULE'),
   ('copyreg',
    'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\copyreg.py',
    'PYMODULE'),
-  ('sre_compile',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\sre_compile.py',
-   'PYMODULE'),
-  ('os',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\os.py',
-   'PYMODULE'),
-  ('_weakrefset',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\_weakrefset.py',
+  ('sre_constants',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\sre_constants.py',
    'PYMODULE'),
   ('codecs',
    'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\codecs.py',
    'PYMODULE'),
-  ('collections',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\collections\\__init__.py',
-   'PYMODULE'),
-  ('abc',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\abc.py',
-   'PYMODULE'),
   ('traceback',
    'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\traceback.py',
    'PYMODULE'),
-  ('reprlib',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\reprlib.py',
-   'PYMODULE'),
-  ('sre_constants',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\sre_constants.py',
-   'PYMODULE'),
-  ('keyword',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\keyword.py',
-   'PYMODULE'),
-  ('types',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\types.py',
-   'PYMODULE'),
-  ('ntpath',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\ntpath.py',
-   'PYMODULE'),
-  ('weakref',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\weakref.py',
-   'PYMODULE'),
-  ('operator',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\operator.py',
-   'PYMODULE'),
-  ('warnings',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\warnings.py',
-   'PYMODULE'),
-  ('genericpath',
-   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\genericpath.py',
+  ('enum',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\enum.py',
    'PYMODULE'),
   ('heapq',
    'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\heapq.py',
+   'PYMODULE'),
+  ('io',
+   'C:\\Users\\91963\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\io.py',
    'PYMODULE')])

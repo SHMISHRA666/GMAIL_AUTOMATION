@@ -8,17 +8,8 @@ from .models import ConfirmationRow, DocumentResult, VerificationResult
 
 class DocumentVerifier:
     UNRESOLVED_MARKERS = [
-        "{{First Name}}",
-        "{{Last Name}}",
-        "Name of Vendor/customer",
-        "Address of Vendor/customer",
-        "INR\ufffd\ufffd\ufffd\ufffd\ufffd..",
-        "INR\u2026\u2026\u2026\u2026\u2026..",
-        "INR ---------------------------",
-        "INR --------------",
-        "INR -------------------",
-        "March 31, 2025",
-        "31st March 2025",
+        "{party_name}",
+        "{amount}",
     ]
 
     def verify(self, row: ConfirmationRow, documents: DocumentResult) -> VerificationResult:
@@ -41,10 +32,6 @@ class DocumentVerifier:
 
         required_values = [
             row.party_name,
-            row.address,
-            row.balance_as_on_date,
-            row.company_name,
-            row.auditor_reply_email,
         ]
         if row.balance:
             required_values.append(str(row.balance))

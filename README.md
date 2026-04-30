@@ -1,10 +1,11 @@
 # Gmail Confirmation Automation
 
-Local Windows automation for balance confirmation work. It reads parties from a master Excel workbook, generates Word/PDF confirmation attachments from embedded templates, sends one Gmail email per party, and maintains a resumable tracking workbook.
+Local Windows automation for balance confirmation work. It reads parties from a multi-sheet master Excel workbook, generates Word/PDF confirmation attachments from bundled Word templates, sends one Gmail email per party, and maintains a resumable tracking workbook.
 
 ## What It Does
 
-- Generates authorisation letter, balance confirmation letter, and reply form for each party.
+- Generates a balance confirmation letter and vendor reply form for each party.
+- Attaches the static authorisation PDF to every email.
 - Converts generated DOCX files to PDF using Microsoft Word automation.
 - Sends Gmail messages through SMTP using a Gmail App Password.
 - Tracks sent status, replies, and bounces through Gmail IMAP.
@@ -12,39 +13,39 @@ Local Windows automation for balance confirmation work. It reads parties from a 
 
 ## Files
 
-- `Excel .xlsx`: main user input workbook.
+- `Information for External Balance Confirmations (1).xlsx`: main user input workbook.
 - `config.json`: Gmail and run settings.
 - `Tracking.xlsx`: generated/updated automatically for execution state.
 - `generated/<PartyId>/`: generated DOCX/PDF files for each party.
 - `logs/`: run logs with validation, generation, send, and tracking results.
 - `dist/GmailConfirmationAutomation.exe`: packaged executable.
 
-The Word templates are embedded in the application resources, so normal users only need the master Excel file and `config.json`.
+The mail body is codified in Python. The generated document formatting comes from Word templates bundled inside the app, so normal users only need the master Excel file and `config.json`; the static authorisation PDF is also bundled with the app.
 
 ## Quick Start With EXE
 
 Run full automation:
 
 ```powershell
-.\dist\GmailConfirmationAutomation.exe --master "Excel .xlsx" --mode all
+.\dist\GmailConfirmationAutomation.exe --master "Information for External Balance Confirmations (1).xlsx" --mode all
 ```
 
 Validate and generate attachments without sending:
 
 ```powershell
-.\dist\GmailConfirmationAutomation.exe --master "Excel .xlsx" --mode preview
+.\dist\GmailConfirmationAutomation.exe --master "Information for External Balance Confirmations (1).xlsx" --mode preview
 ```
 
 Generate DOCX only, without PDF conversion:
 
 ```powershell
-.\dist\GmailConfirmationAutomation.exe --master "Excel .xlsx" --mode preview --no-pdf
+.\dist\GmailConfirmationAutomation.exe --master "Information for External Balance Confirmations (1).xlsx" --mode preview --no-pdf
 ```
 
 Track replies and bounces after emails are sent:
 
 ```powershell
-.\dist\GmailConfirmationAutomation.exe --master "Excel .xlsx" --mode track
+.\dist\GmailConfirmationAutomation.exe --master "Information for External Balance Confirmations (1).xlsx" --mode track
 ```
 
 ## Run Modes
@@ -76,29 +77,22 @@ Do not share or commit a real Gmail App Password. If it is exposed, revoke it in
 
 ## Master Excel Columns
 
-The workbook should contain a `Confirmations` sheet. Key columns:
+The workbook can contain multiple sheets. The app processes every non-blank sheet except `Banks`; blank sheets and rows are skipped.
 
-- `PartyId`: unique ID for each party, also used for generated folder names.
-- `Name`: party/contact name.
-- `To Email`: primary recipient email address.
-- `Email`: fallback recipient if `To Email` is blank.
-- `CC`: optional CC addresses separated by semicolon.
-- `Subject`: email subject.
-- `Balance`: balance amount.
-- `BalanceNature`: receivable/payable or similar balance description.
-- `CompanyName`: company name used in the letters.
-- `Address`: party address.
-- `Phone`: optional phone number.
-- `BalanceAsOnDate`: date to insert in letters.
-- `LetterDate`: letter date.
-- `AuditorReplyEmail`: reply email shown in templates.
-- `File Path Locations`: optional extra attachments, separated by semicolon or new line.
-- `MailBodyOverride`: optional custom email body for that row.
+Required columns on each processed sheet:
+
+- `S.No.`: row serial number; combined with the sheet name to create the tracking ID.
+- `Party Type`: category/type from the workbook.
+- `Party Name`: vendor/customer name inserted into generated documents.
+- `Email To(Address)`: recipient email address.
+- `Balance`: amount inserted into the mail body and generated documents.
 
 ## Tracking Workbook
 
 `Tracking.xlsx` is maintained by the app. Important status fields:
 
+- `PartyId`: generated as `<SheetName>-<S.No.>` for resumable tracking.
+- `SheetName`, `S.No.`, `Party Type`, `Party Name`, `Email To(Address)`, `Balance`: source workbook details.
 - `AttachmentCreated`: generated attachment files were created.
 - `GeneratedDocxPaths` and `GeneratedPdfPaths`: file paths written for the party.
 - `ReadyToSend`: generated files passed verification and can be sent.
@@ -116,7 +110,7 @@ The workbook should contain a `Confirmations` sheet. Key columns:
 After a run, check:
 
 - Latest file in `logs/` ends with `Run completed` and has no `[ERROR]` lines.
-- Each party has files under `generated/<PartyId>/`.
+- Each party has files under `generated/<PartyId>/`, and the static PDF is copied under `generated/_static/`.
 - PDF count matches DOCX count when `convert_to_pdf` is enabled.
 - Opening generated DOCX files in Word does not show a repair/unreadable-content prompt.
 - `Tracking.xlsx` shows `AttachmentCreated = Y`, `ReadyToSend = Y`, and `VerificationStatus = Passed`.
@@ -129,7 +123,7 @@ After a run, check:
 Run from source:
 
 ```powershell
-python -m gmail_automation --master "Excel .xlsx" --mode preview
+python -m gmail_automation --master "Information for External Balance Confirmations (1).xlsx" --mode preview
 ```
 
 Build the executable:

@@ -5,6 +5,7 @@ import re
 import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 XML_NS_URI = "http://www.w3.org/XML/1998/namespace"
@@ -53,6 +54,43 @@ def replace_docx_text(template_bytes: bytes, replacements: dict[str, str]) -> by
             if _is_word_xml(item.filename):
                 data = _replace_in_xml(data, replacements)
             zout.writestr(item, data)
+    return output.getvalue()
+
+
+def build_docx_from_paragraphs(paragraphs: list[str]) -> bytes:
+    document = "\n".join(_paragraph_xml(paragraph) for paragraph in paragraphs)
+    document_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    {document}
+    <w:sectPr>
+      <w:pgSz w:w="12240" w:h="15840"/>
+      <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>
+    </w:sectPr>
+  </w:body>
+</w:document>
+"""
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>
+""",
+        )
+        archive.writestr(
+            "_rels/.rels",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>
+""",
+        )
+        archive.writestr("word/document.xml", document_xml)
     return output.getvalue()
 
 
@@ -108,6 +146,16 @@ def _paragraph_text(para: ET.Element) -> str:
         elif node.tag == WORD_NS + "br":
             values.append("\n")
     return "".join(values)
+
+
+def _paragraph_xml(paragraph: str) -> str:
+    runs = []
+    parts = paragraph.split("\n")
+    for index, part in enumerate(parts):
+        if index:
+            runs.append("<w:r><w:br/></w:r>")
+        runs.append(f"<w:r><w:t>{escape(part)}</w:t></w:r>")
+    return "<w:p>" + "".join(runs) + "</w:p>"
 
 
 def _namespace_context(data: bytes) -> tuple[dict[str, str], set[str]]:

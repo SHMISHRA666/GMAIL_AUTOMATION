@@ -6,36 +6,25 @@ from pathlib import Path
 from openpyxl import Workbook, load_workbook
 
 from .models import ConfirmationRow, DocumentResult, RowState, SendResult, TrackingResult, now_text
+from .templates import AUDITOR_REPLY_EMAIL, BALANCE_AS_ON_DATE, SUBJECT_TEMPLATE
 
 MASTER_HEADERS = [
-    "PartyId",
-    "Party",
-    "Name",
-    "ContactFirstName",
-    "ContactLastName",
-    "To Email",
-    "Email",
-    "CC",
-    "Subject",
+    "S.No.",
+    "Party Type",
+    "Party Name",
+    "Email To(Address)",
     "Balance",
-    "BalanceNature",
-    "CompanyName",
-    "Address",
-    "Phone",
-    "BalanceAsOnDate",
-    "LetterDate",
-    "AuditorReplyEmail",
-    "File Path Locations",
-    "MailBodyOverride",
 ]
+EXCLUDED_SHEETS = {"Banks"}
 
 TRACKING_HEADERS = [
     "PartyId",
-    "Party",
-    "Name",
-    "To Email",
-    "CompanyName",
-    "File Path Locations",
+    "SheetName",
+    "S.No.",
+    "Party Type",
+    "Party Name",
+    "Email To(Address)",
+    "Balance",
     "Sent Date",
     "Reminder 1",
     "Reminder 2",
@@ -76,7 +65,6 @@ class ExcelStateStore:
         self.master_path = master_path
         self.work_dir = master_path.parent
         self.tracking_path = tracking_path or self.work_dir / "Tracking.xlsx"
-        self.master_sheet = "Confirmations"
         self.tracking_sheet = "Tracking"
 
     def validate(self) -> list[str]:
@@ -84,23 +72,21 @@ class ExcelStateStore:
         if not self.master_path.exists():
             errors.append(f"Master workbook not found: {self.master_path}")
             return errors
-        wb = load_workbook(self.master_path)
-        if self.master_sheet not in wb.sheetnames:
-            errors.append(f"Missing sheet: {self.master_sheet}")
-            return errors
-        headers = self._headers(wb[self.master_sheet])
-        required = {"PartyId", "Name", "To Email", "Subject", "Balance", "Address"}
-        missing = sorted(required - set(headers))
-        if missing:
-            errors.append(f"Missing required master columns: {', '.join(missing)}")
+        wb = load_workbook(self.master_path, data_only=True)
+        processable_sheets = 0
+        for ws in wb.worksheets:
+            if ws.title in EXCLUDED_SHEETS or self._is_blank_sheet(ws):
+                continue
+            processable_sheets += 1
+            headers = self._headers(ws)
+            missing = sorted(set(MASTER_HEADERS) - set(headers))
+            if missing:
+                errors.append(f"{ws.title}: missing required master columns: {', '.join(missing)}")
+        if processable_sheets == 0:
+            errors.append("No non-blank worksheets found to process after excluding Banks")
         return errors
 
     def ensure_workbooks(self) -> None:
-        wb = load_workbook(self.master_path)
-        ws = wb[self.master_sheet]
-        self._ensure_headers(ws, MASTER_HEADERS)
-        self._save_with_retry(wb, self.master_path)
-
         if self.tracking_path.exists():
             twb = load_workbook(self.tracking_path)
         else:
@@ -110,7 +96,7 @@ class ExcelStateStore:
         tws.title = self.tracking_sheet
         self._ensure_headers(tws, TRACKING_HEADERS)
         tracking_ids = self._tracking_ids(tws)
-        rows = self._master_records(ws)
+        rows = self._master_records()
         for record in rows:
             party_id = record["PartyId"]
             if party_id and party_id not in tracking_ids:
@@ -119,13 +105,11 @@ class ExcelStateStore:
 
     def load_rows(self) -> list[ConfirmationRow]:
         self.ensure_workbooks()
-        wb = load_workbook(self.master_path)
         twb = load_workbook(self.tracking_path)
-        ws = wb[self.master_sheet]
         tws = twb[self.tracking_sheet]
         tracking_by_id = self._tracking_records(tws)
         rows: list[ConfirmationRow] = []
-        for row_number, record in self._master_records(ws, include_row=True):
+        for row_number, record in self._master_records(include_row=True):
             row_id = str(record.get("PartyId") or "").strip()
             if not row_id:
                 continue
@@ -210,31 +194,31 @@ class ExcelStateStore:
         )
 
     def _row_from_record(self, row_number: int, record: dict[str, object], state: RowState) -> ConfirmationRow:
-        name = self._text(record.get("Name"))
+        name = self._text(record.get("Party Name"))
         first = self._text(record.get("ContactFirstName")) or (name.split(" ")[0] if name else "")
         last = self._text(record.get("ContactLastName")) or (" ".join(name.split(" ")[1:]) if len(name.split(" ")) > 1 else "")
-        email = self._text(record.get("To Email")) or self._text(record.get("Email"))
+        email = self._text(record.get("Email To(Address)"))
         return ConfirmationRow(
             row_id=self._text(record.get("PartyId")),
             excel_row_number=row_number,
-            party=self._text(record.get("Party")),
+            party=self._text(record.get("Party Type")),
             party_name=name,
             contact_name=name,
             contact_first_name=first,
             contact_last_name=last,
             email=email,
-            cc=self._text(record.get("CC")),
-            subject=self._text(record.get("Subject")),
+            cc="",
+            subject=SUBJECT_TEMPLATE,
             balance=self._text(record.get("Balance")),
-            balance_nature=self._text(record.get("BalanceNature")),
-            company_name=self._text(record.get("CompanyName")) or "Purple United Sales Limited",
-            address=self._text(record.get("Address")),
-            phone=self._text(record.get("Phone")),
-            balance_as_on_date=self._text(record.get("BalanceAsOnDate")) or "31st March 2026",
-            letter_date=self._text(record.get("LetterDate")) or now_text().split(" ")[0],
-            auditor_reply_email=self._text(record.get("AuditorReplyEmail")) or "ghanshyam@ngmks.in",
-            mail_body_override=self._text(record.get("MailBodyOverride")),
-            extra_attachment_paths=self._split_paths(self._text(record.get("File Path Locations"))),
+            balance_nature="",
+            company_name="Purple United Sales Limited",
+            address="",
+            phone="",
+            balance_as_on_date=BALANCE_AS_ON_DATE,
+            letter_date=now_text().split(" ")[0],
+            auditor_reply_email=AUDITOR_REPLY_EMAIL,
+            mail_body_override="",
+            extra_attachment_paths=[],
             state=state,
         )
 
@@ -306,12 +290,18 @@ class ExcelStateStore:
             if header not in headers:
                 ws.cell(1, ws.max_column + 1).value = header
 
-    def _master_records(self, ws, include_row: bool = False):
-        headers = self._headers(ws)
+    def _master_records(self, include_row: bool = False):
+        wb = load_workbook(self.master_path, data_only=True)
         records = []
-        for row in range(2, ws.max_row + 1):
-            record = {header: ws.cell(row, col).value for header, col in headers.items()}
-            if any(v not in (None, "") for v in record.values()):
+        for ws in wb.worksheets:
+            if ws.title in EXCLUDED_SHEETS or self._is_blank_sheet(ws):
+                continue
+            headers = self._headers(ws)
+            for row in range(2, ws.max_row + 1):
+                raw_record = {header: ws.cell(row, col).value for header, col in headers.items()}
+                if not any(raw_record.get(header) not in (None, "") for header in MASTER_HEADERS):
+                    continue
+                record = self._normalize_master_record(ws.title, row, raw_record)
                 records.append((row, record) if include_row else record)
         return records
 
@@ -333,11 +323,12 @@ class ExcelStateStore:
         row = ws.max_row + 1
         defaults = {
             "PartyId": record.get("PartyId"),
-            "Party": record.get("Party"),
-            "Name": record.get("Name"),
-            "To Email": record.get("To Email") or record.get("Email"),
-            "CompanyName": record.get("CompanyName"),
-            "File Path Locations": record.get("File Path Locations"),
+            "SheetName": record.get("SheetName"),
+            "S.No.": record.get("S.No."),
+            "Party Type": record.get("Party Type"),
+            "Party Name": record.get("Party Name"),
+            "Email To(Address)": record.get("Email To(Address)"),
+            "Balance": record.get("Balance"),
             "AttachmentCreated": "N",
             "ReadyToSend": "N",
             "MainSent": "N",
@@ -360,6 +351,28 @@ class ExcelStateStore:
                 return row
         return None
 
+    def _normalize_master_record(self, sheet_name: str, row_number: int, record: dict[str, object]) -> dict[str, object]:
+        serial = self._text(record.get("S.No.")) or str(row_number - 1)
+        return {
+            "PartyId": f"{self._safe_id(sheet_name)}-{self._safe_id(serial)}",
+            "SheetName": sheet_name,
+            "S.No.": serial,
+            "Party Type": self._text(record.get("Party Type")),
+            "Party Name": self._text(record.get("Party Name")),
+            "Email To(Address)": self._text(record.get("Email To(Address)")),
+            "Balance": self._text(record.get("Balance")),
+        }
+
+    def _is_blank_sheet(self, ws) -> bool:
+        headers = self._headers(ws)
+        if not headers:
+            return True
+        for row in range(2, ws.max_row + 1):
+            for col in headers.values():
+                if ws.cell(row, col).value not in (None, ""):
+                    return False
+        return True
+
     def _save_with_retry(self, wb, path: Path) -> None:
         try:
             wb.save(path)
@@ -377,3 +390,7 @@ class ExcelStateStore:
 
     def _text(self, value: object) -> str:
         return "" if value is None else str(value).strip()
+
+    def _safe_id(self, value: str) -> str:
+        text = re.sub(r"[^A-Za-z0-9]+", "_", value.strip()).strip("_")
+        return text or "row"
