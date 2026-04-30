@@ -7,6 +7,7 @@ import uuid
 from email.message import EmailMessage
 from pathlib import Path
 
+from .formatting import format_amount
 from .models import ConfirmationRow, DocumentResult, MailTemplate, SendConfig, SendResult, now_text
 
 
@@ -54,7 +55,7 @@ class GmailSender:
         body = row.mail_body_override or mail_template.body_template_text
         replacements = {
             "{party_name}": row.party_name,
-            "{amount}": row.balance,
+            "{amount}": format_amount(row.balance),
             "{{First Name}}": row.contact_first_name,
             "{{Last Name}}": row.contact_last_name,
             "March 31, 2025": row.balance_as_on_date,

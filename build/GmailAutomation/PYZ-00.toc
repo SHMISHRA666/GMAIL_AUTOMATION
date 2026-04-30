@@ -1002,6 +1002,10 @@
    'C:\\My '
    'data\\resume_learning_material\\resume\\Nitin_Work\\Gmail_Automation\\gmail_automation\\excel_store.py',
    'PYMODULE'),
+  ('gmail_automation.formatting',
+   'C:\\My '
+   'data\\resume_learning_material\\resume\\Nitin_Work\\Gmail_Automation\\gmail_automation\\formatting.py',
+   'PYMODULE'),
   ('gmail_automation.gmail_sender',
    'C:\\My '
    'data\\resume_learning_material\\resume\\Nitin_Work\\Gmail_Automation\\gmail_automation\\gmail_sender.py',

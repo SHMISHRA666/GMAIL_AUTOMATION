@@ -8,6 +8,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+WORD_NS_URI = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 XML_NS_URI = "http://www.w3.org/XML/1998/namespace"
 XMLNS_RE = re.compile(rb'\sxmlns:([A-Za-z_][\w.\-]*)="([^"]+)"')
 IGNORABLE_RE = re.compile(rb'\s(?:[A-Za-z_][\w.\-]*:)?Ignorable="([^"]*)"')
@@ -45,14 +46,15 @@ def extract_docx_text(path_or_bytes: Path | bytes) -> str:
     return "\n".join(parts)
 
 
-def replace_docx_text(template_bytes: bytes, replacements: dict[str, str]) -> bytes:
+def replace_docx_text(template_bytes: bytes, replacements: dict[str, str], black_replacements: set[str] | None = None) -> bytes:
     source = io.BytesIO(template_bytes)
     output = io.BytesIO()
+    black_replacements = black_replacements or set()
     with zipfile.ZipFile(source, "r") as zin, zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zout:
         for item in zin.infolist():
             data = zin.read(item.filename)
             if _is_word_xml(item.filename):
-                data = _replace_in_xml(data, replacements)
+                data = _replace_in_xml(data, replacements, black_replacements)
             zout.writestr(item, data)
     return output.getvalue()
 
@@ -109,7 +111,7 @@ def _is_word_xml(filename: str) -> bool:
     )
 
 
-def _replace_in_xml(data: bytes, replacements: dict[str, str]) -> bytes:
+def _replace_in_xml(data: bytes, replacements: dict[str, str], black_replacements: set[str]) -> bytes:
     try:
         namespace_context = _namespace_context(data)
         root = ET.fromstring(data)
@@ -122,12 +124,17 @@ def _replace_in_xml(data: bytes, replacements: dict[str, str]) -> bytes:
             continue
         original = "".join(node.text or "" for node in text_nodes)
         updated = original
+        force_black = False
         for old, new in replacements.items():
+            if old in original and old in black_replacements:
+                force_black = True
             updated = updated.replace(old, _xml_safe_text(str(new)))
         if updated != original:
             text_nodes[0].text = updated
             for node in text_nodes[1:]:
                 node.text = ""
+            if force_black:
+                _set_text_node_color(text_nodes[0], para, "000000")
             changed = True
     if not changed:
         return data
@@ -156,6 +163,27 @@ def _paragraph_xml(paragraph: str) -> str:
             runs.append("<w:r><w:br/></w:r>")
         runs.append(f"<w:r><w:t>{escape(part)}</w:t></w:r>")
     return "<w:p>" + "".join(runs) + "</w:p>"
+
+
+def _set_text_node_color(text_node: ET.Element, para: ET.Element, color: str) -> None:
+    run = _run_containing_text_node(para, text_node)
+    if run is None:
+        return
+    run_properties = run.find(WORD_NS + "rPr")
+    if run_properties is None:
+        run_properties = ET.Element(WORD_NS + "rPr")
+        run.insert(0, run_properties)
+    color_node = run_properties.find(WORD_NS + "color")
+    if color_node is None:
+        color_node = ET.SubElement(run_properties, WORD_NS + "color")
+    color_node.set(f"{{{WORD_NS_URI}}}val", color)
+
+
+def _run_containing_text_node(para: ET.Element, text_node: ET.Element) -> ET.Element | None:
+    for run in para.iter(WORD_NS + "r"):
+        if any(node is text_node for node in run.iter(WORD_NS + "t")):
+            return run
+    return None
 
 
 def _namespace_context(data: bytes) -> tuple[dict[str, str], set[str]]:

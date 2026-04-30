@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .docx_utils import extract_docx_text
+from .formatting import format_amount
 from .models import ConfirmationRow, DocumentResult, VerificationResult
 
 
@@ -34,7 +35,7 @@ class DocumentVerifier:
             row.party_name,
         ]
         if row.balance:
-            required_values.append(str(row.balance))
+            required_values.append(format_amount(row.balance))
         for value in required_values:
             if value and value not in combined_text:
                 errors.append(f"Expected value not found in generated DOCX text: {value}")

@@ -15,7 +15,7 @@ DOCX_TEMPLATE_FILES = {
     "vendor_reply_form": "On Vendor letter.docx",
 }
 
-RENDERER_VERSION = "renderer-v7"
+RENDERER_VERSION = "renderer-v8"
 SUBJECT_TEMPLATE = "Confirmation of balance outstanding as on 31st March 2026"
 BALANCE_AS_ON_DATE = "31st March 2026"
 AUDITOR_REPLY_EMAIL = "ghanshyam@ngmks.in"

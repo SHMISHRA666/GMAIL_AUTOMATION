@@ -5,8 +5,11 @@ from pathlib import Path
 
 from .docx_utils import replace_docx_text
 from .errors import DocumentGenerationError
+from .formatting import format_amount
 from .models import ConfirmationRow, DocumentResult, now_text
 from .templates import TemplateRepository
+
+PARTY_NAME_MARKER = "\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026..(Name of Vendor/Customer)"
 
 
 class DocumentGenerator:
@@ -29,7 +32,11 @@ class DocumentGenerator:
 
         try:
             for template_name, output_name in self.DOC_TEMPLATES:
-                rendered = replace_docx_text(templates.load_docx_template(template_name), self._replacements(row))
+                rendered = replace_docx_text(
+                    templates.load_docx_template(template_name),
+                    self._replacements(row),
+                    black_replacements={PARTY_NAME_MARKER},
+                )
                 docx_path = party_dir / output_name
                 docx_path.write_bytes(rendered)
                 docx_paths.append(docx_path)
@@ -54,8 +61,8 @@ class DocumentGenerator:
 
     def _replacements(self, row: ConfirmationRow) -> dict[str, str]:
         return {
-            "\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026..(Name of Vendor/Customer)": row.party_name,
-            "8,75,000.00": row.balance,
+            PARTY_NAME_MARKER: row.party_name,
+            "8,75,000.00": format_amount(row.balance),
         }
 
     def _convert_to_pdf(self, docx_path: Path, pdf_path: Path) -> None:
