@@ -187,6 +187,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=["validate", "preview", "generate", "send", "track", "all"], default="preview")
     parser.add_argument("--no-pdf", action="store_true", help="Generate DOCX only and skip PDF conversion")
     parser.add_argument("--init-config", action="store_true", help="Write a sample config.json and exit")
+    parser.add_argument("--ui", action="store_true", help="Launch the desktop batch approval UI")
+    parser.add_argument("--modern-ui", action="store_true", help="Launch the modern DB-backed compliance UI")
+    parser.add_argument("--init-db", action="store_true", help="Initialize the local SQLite compliance database and exit")
     return parser
 
 
@@ -194,6 +197,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     config_path = Path(args.config).resolve()
+    if args.init_db:
+        from .db import default_database_path, init_db
+
+        db_path = default_database_path()
+        init_db(db_path)
+        print(f"Initialized database: {db_path}")
+        return 0
+    if args.modern_ui:
+        from .modern_ui import launch_modern_ui
+
+        return launch_modern_ui()
+    if args.ui:
+        from .ui import launch_ui
+
+        return launch_ui(config_path)
     if args.init_config:
         write_sample_config(config_path)
         print(f"Wrote sample config: {config_path}")

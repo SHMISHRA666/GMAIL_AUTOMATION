@@ -125,6 +125,7 @@ class SendConfig:
     sender_email: str = ""
     app_password: str = ""
     batch_size: int = 20
+    document_generation_workers: int = 4
     batch_delay_seconds: int = 60
     per_email_delay_seconds: int = 3
     daily_send_limit: int = 100

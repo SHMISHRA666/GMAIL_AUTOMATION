@@ -1,0 +1,41 @@
+# Local credentials and runtime configuration
+config.json
+*.secret.json
+*.env
+.env*
+
+# Personal/client workbooks
+*.xlsx
+*.xlsm
+*.xls
+!requirements.txt
+
+# Personal/client Word templates and generated documents
+*.docx
+*.doc
+*.pdf
+!gmail_automation/resources/*.docx
+!gmail_automation/resources/*.pdf
+
+# Runtime output and audit artifacts
+Tracking.xlsx
+generated/
+logs/
+backups/
+
+# Build artifacts
+build/
+dist/
+*.spec.bak
+*.pyc
+__pycache__/
+
+# Local IDE and Cursor files
+.cursor/
+.vscode/
+
+# OS files
+Thumbs.db
+desktop.ini
+.DS_Store
+GmailAutomation.spec

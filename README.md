@@ -24,6 +24,12 @@ The mail body is codified in Python. The generated document formatting comes fro
 
 ## Quick Start With EXE
 
+Launch the desktop UI:
+
+```powershell
+.\dist\GmailConfirmationAutomation.exe --ui
+```
+
 Run full automation:
 
 ```powershell
@@ -56,6 +62,19 @@ Track replies and bounces after emails are sent:
 - `send`: generates if needed, then sends eligible rows.
 - `track`: checks Gmail inbox for replies and bounce messages.
 - `all`: runs generation, sending, and tracking in one command.
+- `--ui`: opens the desktop batch approval UI instead of running a command-line mode.
+
+## Desktop Batch UI
+
+The UI is intended for supervised sending:
+
+- Choose the input Excel workbook with the file picker.
+- Select a batch size and load the workbook.
+- Generate and verify documents before sending.
+- Click `Preview Next Batch` to see the next docs-ready customers with mail pending, then click `Run Preview Batch` to approve and send only that displayed batch.
+- Use the `Results` tab to filter by batch, see per-customer document/batch/send status, and send or resend pending rows where documents are ready but mail is not sent.
+
+Actual email sending still requires `send_mode` to be `send` in `config.json`. Keep `send_mode` as `preview` when validating the workbook or generated documents without sending mail.
 
 ## Config
 
@@ -124,6 +143,24 @@ Run from source:
 
 ```powershell
 python -m gmail_automation --master "Information for External Balance Confirmations (1).xlsx" --mode preview
+```
+
+Launch the desktop UI from source:
+
+```powershell
+python -m gmail_automation --ui
+```
+
+Launch the modern DB-backed compliance UI from source:
+
+```powershell
+python -m gmail_automation --modern-ui
+```
+
+Initialize the local SQLite compliance database without launching the UI:
+
+```powershell
+python -m gmail_automation --init-db
 ```
 
 Build the executable:

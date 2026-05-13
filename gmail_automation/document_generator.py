@@ -66,15 +66,20 @@ class DocumentGenerator:
         }
 
     def _convert_to_pdf(self, docx_path: Path, pdf_path: Path) -> None:
+        pythoncom = None
         try:
+            import pythoncom  # type: ignore
             import win32com.client  # type: ignore
         except Exception as exc:
             raise DocumentGenerationError("Microsoft Word automation is unavailable for PDF conversion") from exc
 
         word = None
         doc = None
+        com_initialized = False
         try:
-            word = win32com.client.Dispatch("Word.Application")
+            pythoncom.CoInitialize()
+            com_initialized = True
+            word = win32com.client.DispatchEx("Word.Application")
             word.Visible = False
             doc = word.Documents.Open(str(docx_path))
             doc.SaveAs(str(pdf_path), FileFormat=17)
@@ -83,6 +88,8 @@ class DocumentGenerator:
                 doc.Close(False)
             if word is not None:
                 word.Quit()
+            if com_initialized and pythoncom is not None:
+                pythoncom.CoUninitialize()
 
     def _hash_files(self, paths: list[Path]) -> str:
         digest = hashlib.sha256()
