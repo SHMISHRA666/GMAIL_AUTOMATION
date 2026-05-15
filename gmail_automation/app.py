@@ -10,9 +10,9 @@ from .config import load_config, write_sample_config
 from .document_generator import DocumentGenerator
 from .errors import ErrorClassifier, ValidationError
 from .excel_store import ExcelStateStore
-from .gmail_sender import GmailSender
 from .gmail_tracker import GmailTracker
 from .logging_utils import AppLogger
+from .mail_sender import send_with_fallback
 from .models import ConfirmationRow, SendConfig
 from .retry import RetryPolicy
 from .templates import TemplateRepository
@@ -92,12 +92,11 @@ class GmailConfirmationApp:
 
     def _send_batches(self) -> None:
         if self.config.send_mode != "send":
-            self.logger.warning(None, "gmail_send", "Send mode is not enabled in config; skipping actual send", {"send_mode": self.config.send_mode})
+            self.logger.warning(None, "mail_send", "Send mode is not enabled in config; skipping actual send", {"send_mode": self.config.send_mode})
             return
         rows = self.store.load_rows()
         mail_template = self.templates.load_mail_template()
         batches = BatchPlanner().plan(rows, self.config)
-        sender = GmailSender(self.config)
         sent_count = 0
         for batch in batches:
             for sequence, row in enumerate(batch.rows, start=1):
@@ -107,16 +106,16 @@ class GmailConfirmationApp:
                     if row.state.main_sent == "Y":
                         continue
                     documents = self._documents_from_state(row)
-                    result = sender.send(row, mail_template, documents)
+                    result = send_with_fallback(self.config, row, mail_template, documents)
                     self.store.mark_send_success(row.row_id, result)
-                    self.logger.info(row.row_id, "gmail_send", "Email sent", {"to": row.email, "message_id": result.smtp_message_id})
+                    self.logger.info(row.row_id, "mail_send", "Email sent", {"to": row.email, "message_id": result.smtp_message_id})
                     sent_count += 1
                     if sent_count >= self.config.daily_send_limit:
-                        self.logger.warning(None, "gmail_send", "Daily send limit reached", {"limit": self.config.daily_send_limit})
+                        self.logger.warning(None, "mail_send", "Daily send limit reached", {"limit": self.config.daily_send_limit})
                         return
                     time.sleep(self.config.per_email_delay_seconds)
                 except Exception as exc:
-                    self._handle_error(row, "gmail_send", exc)
+                    self._handle_error(row, "mail_send", exc)
             if batch is not batches[-1]:
                 time.sleep(self.config.batch_delay_seconds)
 

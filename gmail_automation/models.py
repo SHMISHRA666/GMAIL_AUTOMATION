@@ -122,8 +122,17 @@ class RetryDecision:
 
 @dataclass
 class SendConfig:
+    mail_provider: str = "gmail_smtp"
+    fallback_providers: str = ""
+    auth_type: str = "smtp_password"
     sender_email: str = ""
     app_password: str = ""
+    smtp_password: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 0
+    smtp_use_starttls: bool = True
+    smtp_use_ssl: bool = False
+    smtp_username: str = ""
     batch_size: int = 20
     document_generation_workers: int = 4
     batch_delay_seconds: int = 60

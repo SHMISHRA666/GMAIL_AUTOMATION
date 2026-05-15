@@ -29,8 +29,8 @@ from .db_models import (
 )
 from .docx_utils import extract_docx_text, replace_docx_text
 from .errors import ValidationError
-from .gmail_sender import GmailSender
 from .liquid_utils import build_nested_context, extract_liquid_variables, render_liquid_template
+from .mail_sender import send_with_fallback
 from .models import ConfirmationRow, DocumentResult, MailTemplate, RowState, SendConfig
 from .retry import RetryPolicy
 
@@ -560,7 +560,7 @@ class WorkflowService:
                     self.workflow.mark_email_sent(message.id, result.smtp_message_id, result.gmail_thread_id)
                 sent_count += 1
             except Exception as exc:
-                decision = self.retry_policy.next_attempt("gmail_send", message.attempts + 1, True)
+                decision = self.retry_policy.next_attempt("mail_send", message.attempts + 1, True)
                 message.attempts += 1
                 message.next_retry_at = decision.next_retry_at
                 message.retry_locked = decision.locked
@@ -626,7 +626,7 @@ class WorkflowService:
             attachment_hash=_sha256_text("|".join(sorted(str(path) for path in document_paths))),
         )
         mail_template = MailTemplate(subject_template=message.subject, body_template_text=message.body, required_fields=set())
-        return GmailSender(self.config).send(row, mail_template, document_result)
+        return send_with_fallback(self.config, row, mail_template, document_result)
 
     def _generate_document_job(self, job: DocumentJob) -> GeneratedJobResult:
         counterparty = self.session.get(Counterparty, job.counterparty_id)

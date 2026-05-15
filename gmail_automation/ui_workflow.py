@@ -11,8 +11,8 @@ from .config import load_config
 from .document_generator import DocumentGenerator
 from .errors import ErrorClassifier, ValidationError
 from .excel_store import ExcelStateStore
-from .gmail_sender import GmailSender
 from .logging_utils import AppLogger
+from .mail_sender import send_with_fallback
 from .models import ConfirmationRow, DocumentResult, SendBatch, SendConfig, VerificationResult
 from .retry import RetryPolicy
 from .templates import TemplateRepository
@@ -159,9 +159,8 @@ class GmailAutomationWorkflow:
         if not rows:
             return BatchRunResult(batch_id=batch_id, attempted=0, sent=0, failed=0)
         if self.config.send_mode != "send":
-            raise ValidationError("Set send_mode to 'send' in config.json before sending emails.")
+            raise ValidationError("Set send mode to 'send' before sending live emails.")
 
-        sender = GmailSender(self.config)
         mail_template = self.templates.load_mail_template()
         sent = 0
         failed = 0
@@ -174,15 +173,15 @@ class GmailAutomationWorkflow:
                 self._validate_row(row)
                 if row.state.main_sent == "Y":
                     continue
-                result = sender.send(row, mail_template, self._documents_from_state(row))
+                result = send_with_fallback(self.config, row, mail_template, self._documents_from_state(row))
                 self.store.mark_send_success(row.row_id, result)
-                self._log_info(row.row_id, "gmail_send", "Email sent", {"to": row.email, "message_id": result.smtp_message_id})
+                self._log_info(row.row_id, "mail_send", "Email sent", {"to": row.email, "message_id": result.smtp_message_id})
                 sent += 1
                 self._sent_in_session += 1
                 time.sleep(self.config.per_email_delay_seconds)
             except Exception as exc:
                 failed += 1
-                self._handle_error(row, "gmail_send", exc)
+                self._handle_error(row, "mail_send", exc)
         return BatchRunResult(batch_id=batch_id, attempted=len(rows), sent=sent, failed=failed)
 
     def _generate_document_outcome(self, row: ConfirmationRow) -> DocumentGenerationOutcome:

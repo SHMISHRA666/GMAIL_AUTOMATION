@@ -11,6 +11,7 @@ class RetryPolicy:
         "pdf_conversion": 3,
         "excel_save": 3,
         "gmail_send": 3,
+        "mail_send": 3,
         "gmail_tracking": 3,
     }
 
@@ -19,6 +20,7 @@ class RetryPolicy:
         "pdf_conversion": [5, 15, 30],
         "excel_save": [5, 15, 30],
         "gmail_send": [30, 120, 300],
+        "mail_send": [30, 120, 300],
         "gmail_tracking": [30, 120, 300],
     }
 

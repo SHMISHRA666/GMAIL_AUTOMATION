@@ -10,7 +10,10 @@ from .db import default_database_path, init_db
 from .db_models import Client, ClientQuarter, Counterparty, DocumentJob, EmailMessage, ExcelImport, GeneratedDocument, Template, TemplateVariable
 from .docx_utils import extract_docx_text
 from .errors import ValidationError
+from .mail_sender import create_mail_sender
+from .models import SendConfig
 from .services import ClientService, DashboardService, ImportService, STATUS_COLUMNS, TemplateService, WorkflowService
+from .settings_store import SettingsService
 
 
 class ModernComplianceController:
@@ -272,7 +275,12 @@ class ModernComplianceController:
             document_mapping_errors = _mapping_errors_for_variables(document_variables, mappings, columns)
             mail_mapping_errors = _mapping_errors_for_variables(mail_variables, mappings, columns)
             send_config = self._load_send_config()
-            send_enabled = send_config.send_mode == "send" and bool(send_config.sender_email) and bool(send_config.app_password)
+            smtp_ready = (
+                send_config.mail_provider in {"gmail_smtp", "webtel_smtp"}
+                and bool(send_config.sender_email)
+                and bool(send_config.smtp_password or send_config.app_password)
+            )
+            send_enabled = send_config.send_mode == "send" and smtp_ready
             return {
                 "counterparty_count": len(counterparties),
                 "import_count": len(imports),
@@ -286,6 +294,8 @@ class ModernComplianceController:
                 "can_send_mail": bool(counterparties) and len(mail_templates) >= 2 and not mail_mapping_errors and send_enabled,
                 "send_mode": send_config.send_mode,
                 "send_enabled": send_enabled,
+                "mail_provider": send_config.mail_provider,
+                "connected_email": send_config.sender_email,
             }
 
     def get_client_compliance_summary(self, client_id: int) -> dict:
@@ -411,7 +421,7 @@ class ModernComplianceController:
         if readiness["mail_mapping_errors"]:
             raise ValueError("Fix mail mappings before sending: " + "; ".join(readiness["mail_mapping_errors"]))
         if not readiness["send_enabled"]:
-            raise ValueError("Enable send_mode='send' and set sender_email/app_password in config.json to send live mail.")
+            raise ValueError("Enable send mode and configure Gmail SMTP or Webtel SMTP before sending live mail.")
         generated_ids = self._counterparty_ids_with_generated_documents(client_quarter_id)
         missing_docs = counterparty_ids - generated_ids
         if missing_docs:
@@ -424,12 +434,121 @@ class ModernComplianceController:
             failed = len(messages) - sent
             return f"Queued {len(messages)} selected email(s); sent {sent}, failed {failed}."
 
-    def _load_send_config(self):
+    def get_mail_settings(self) -> dict:
+        with Session(self.engine) as session:
+            settings = SettingsService(session)
+            provider = settings.get_value("mail.provider", "")
+            workspace_config = Path.cwd() / "config.json"
+            local_config = self.db_path.parent / "config.json"
+            fallback = load_config(workspace_config if workspace_config.exists() else (local_config if local_config.exists() else None))
+            config = self._load_send_config()
+            effective_provider = normalized_mail_provider_value(provider or config.mail_provider or fallback.mail_provider)
+            return {
+                "mail_provider": effective_provider,
+                "fallback_providers": config.fallback_providers or fallback.fallback_providers,
+                "send_mode": config.send_mode,
+                "sender_email": config.sender_email,
+                "daily_send_limit": str(config.daily_send_limit),
+                "per_email_delay_seconds": str(config.per_email_delay_seconds),
+                "smtp_username": config.smtp_username or config.sender_email,
+                "smtp_password_saved": bool(settings.get_value("mail.smtp_password", "")),
+                "connected_email": config.sender_email,
+            }
+
+    def save_mail_settings(
+        self,
+        mail_provider: str,
+        send_mode: str,
+        sender_email: str,
+        fallback_providers: str,
+        daily_send_limit: int,
+        per_email_delay_seconds: int,
+        smtp_host: str,
+        smtp_port: int,
+        smtp_username: str,
+        smtp_password: str = "",
+    ) -> str:
+        provider = normalized_mail_provider_value(mail_provider)
+        mode = (send_mode or "").strip() or "preview"
+        with Session(self.engine) as session:
+            settings = SettingsService(session)
+            settings.set_value("mail.provider", provider)
+            settings.set_value("mail.fallback_providers", (fallback_providers or "").strip())
+            settings.set_value("mail.send_mode", mode)
+            settings.set_value("mail.sender_email", (sender_email or "").strip())
+            settings.set_value("mail.daily_send_limit", str(max(1, int(daily_send_limit))))
+            settings.set_value("mail.per_email_delay_seconds", str(max(0, int(per_email_delay_seconds))))
+            settings.set_value("mail.smtp_host", (smtp_host or "smtp.gmail.com").strip())
+            settings.set_value("mail.smtp_port", str(max(1, int(smtp_port))))
+            settings.set_value("mail.smtp_use_ssl", "true" if provider == "webtel_smtp" or int(smtp_port) == 465 else "false")
+            settings.set_value("mail.smtp_username", (smtp_username or sender_email or "").strip())
+            if smtp_password.strip():
+                settings.set_value("mail.smtp_password", smtp_password.strip(), secret=True)
+        return "Mail settings saved."
+
+    def test_mail_connection(self) -> str:
+        config = self._load_send_config()
+        if config.mail_provider in {"gmail_smtp", "webtel_smtp"} and not config.smtp_username:
+            config.smtp_username = config.sender_email
+        sender = create_mail_sender(config)
+        return sender.test_connection()
+
+    def send_test_email(self, to_email: str) -> str:
+        config = self._load_send_config()
+        if config.mail_provider in {"gmail_smtp", "webtel_smtp"} and not config.smtp_username:
+            config.smtp_username = config.sender_email
+        if not to_email.strip():
+            raise ValueError("Enter a test recipient email.")
+        dummy_row = Counterparty(
+            id=0,
+            client_id=0,
+            client_quarter_id=0,
+            source_sheet="test",
+            source_row_number=0,
+            source_row_key="test",
+            party_type="Test",
+            party_name="Test Party",
+            email=to_email.strip(),
+            cc="",
+            balance="0",
+        )
+        row_model = _counterparty_to_confirmation_row(dummy_row, subject="Mail configuration test", body="This is a test email from configuration.")
+        from .models import DocumentResult, MailTemplate
+
+        result = create_mail_sender(config).send(
+            row_model,
+            MailTemplate(subject_template=row_model.subject, body_template_text=row_model.mail_body_override, required_fields=set()),
+            DocumentResult(docx_paths=[], pdf_paths=[], extra_attachment_paths=[], created_at="", template_version="test", attachment_hash=""),
+        )
+        return f"Test email sent to {to_email.strip()} (message id: {result.smtp_message_id})."
+
+    def _load_send_config(self) -> SendConfig:
         workspace_config = Path.cwd() / "config.json"
-        if workspace_config.exists():
-            return load_config(workspace_config)
         local_config = self.db_path.parent / "config.json"
-        return load_config(local_config if local_config.exists() else None)
+        config = load_config(workspace_config if workspace_config.exists() else (local_config if local_config.exists() else None))
+        with Session(self.engine) as session:
+            settings = SettingsService(session)
+            config.mail_provider = normalized_mail_provider_value(settings.get_value("mail.provider", config.mail_provider))
+            config.fallback_providers = settings.get_value("mail.fallback_providers", config.fallback_providers)
+            config.send_mode = settings.get_value("mail.send_mode", config.send_mode)
+            config.sender_email = settings.get_value("mail.sender_email", config.sender_email)
+            config.daily_send_limit = int(settings.get_value("mail.daily_send_limit", str(config.daily_send_limit)) or config.daily_send_limit)
+            config.per_email_delay_seconds = int(
+                settings.get_value("mail.per_email_delay_seconds", str(config.per_email_delay_seconds)) or config.per_email_delay_seconds
+            )
+            if config.mail_provider == "gmail_smtp":
+                config.smtp_host = "smtp.gmail.com"
+                config.smtp_port = 587
+                config.smtp_use_starttls = True
+                config.smtp_use_ssl = False
+            elif config.mail_provider == "webtel_smtp":
+                config.smtp_host = "connect.webtelconnect.com"
+                config.smtp_port = 465
+                config.smtp_use_starttls = False
+                config.smtp_use_ssl = True
+            config.smtp_username = settings.get_value("mail.smtp_username", config.smtp_username or config.sender_email)
+            config.smtp_password = settings.get_value("mail.smtp_password", config.smtp_password or config.app_password)
+        return config
 
     def _counterparty_ids_with_generated_documents(self, client_quarter_id: int) -> set[int]:
         with Session(self.engine) as session:
@@ -523,11 +642,21 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
     configure_client_id = {"value": None}
     settings_title = ft.Text("Select a client from Clients to configure inputs and mapping.", selectable=True)
     configure_empty = ft.Text("Create a client or use Configure on an existing client to continue.", selectable=True)
+    mail_settings_title = ft.Text("Select a client from Clients to configure mail setup.", selectable=True)
+    mail_setup_empty = ft.Text("Create/select a client before configuring mail setup.", selectable=True)
     workflow_context = ft.Text("Select a client quarter before running workflow actions.", selectable=True)
     compliance_detail = ft.Text("Open a client's current quarter to see its compliance details.", selectable=True)
     compliance_row_details = ft.Column(spacing=8)
     selected_counterparty_ids: set[int] = set()
     visible_counterparty_rows: list[dict] = []
+    row_page_index = {"value": 0}
+    row_page_size = ft.Dropdown(
+        label="Rows per page",
+        value="20",
+        width=150,
+        options=[ft.dropdown.Option(value) for value in ("10", "20", "50", "100")],
+    )
+    row_page_status = ft.Text("No rows loaded.", selectable=True)
     workflow_batch_size = ft.TextField(label="Batch size", value="20", width=110)
     workflow_action_hint = ft.Text("Open a current quarter and select rows to enable workflow actions.", selectable=True)
     generated_doc_hint = ft.Text("Select exactly one row with generated docs to preview output.", selectable=True)
@@ -558,15 +687,60 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
         min_lines=6,
         value="Dear {{ party_name }},\n\nPlease confirm the balance of {{ balance }} for {{ quarter.name }}.\n\nRegards",
     )
+    mail_provider = ft.Dropdown(
+        label="Mail provider",
+        value="gmail_smtp",
+        options=[
+            ft.dropdown.Option(key="webtel_smtp", text="Webtel SMTP"),
+            ft.dropdown.Option(key="gmail_smtp", text="Gmail SMTP"),
+        ],
+        visible=False,
+    )
+    send_mode = ft.Dropdown(label="Send mode", value="preview", options=[ft.dropdown.Option("preview"), ft.dropdown.Option("send")], width=160)
+    sender_email_field = ft.TextField(label="Sender email", width=420)
+    provider_choice_status = ft.Text("Selected provider: Gmail SMTP", selectable=True)
+    fallback_providers_field = ft.TextField(
+        label="Fallback providers (comma separated)",
+        hint_text="Example: webtel_smtp,gmail_smtp",
+        width=720,
+    )
+    daily_send_limit_field = ft.TextField(label="Daily send limit", value="500", width=140)
+    per_email_delay_field = ft.TextField(label="Per-email delay (seconds)", value="3", width=180)
+    smtp_username_field = ft.TextField(label="SMTP username", width=320)
+    smtp_password_field = ft.TextField(label="SMTP password/app password", password=True, can_reveal_password=True, width=720)
+    smtp_defaults_text = ft.Text("SMTP server defaults are selected automatically by the app.", selectable=True)
+    test_recipient_field = ft.TextField(label="Test recipient email", width=720)
+    mail_setup_next_steps = ft.Text(selectable=True)
+    mail_settings_status = ft.Text("Mail setup: not configured.", selectable=True)
     inputs_status = ft.Text("Save templates, import Excel, then auto-map variables.", selectable=True)
 
     page_cards: list = []
     nav_buttons: list = []
     active_page = {"name": "Home"}
+    selected_mail_provider = {"value": "gmail_smtp"}
 
     def safe_update() -> None:
         if page is not None:
             page.update()
+
+    def show_feedback(message: str, is_error: bool = False) -> None:
+        status.value = message
+        if page is None:
+            return
+        snack = ft.SnackBar(
+            content=ft.Text(message),
+            bgcolor=ft.Colors.RED_100 if is_error else ft.Colors.GREEN_100,
+        )
+        try:
+            page.snack_bar = snack
+            page.snack_bar.open = True
+            page.update()
+        except Exception:
+            try:
+                page.open(snack)
+                page.update()
+            except Exception:
+                pass
 
     def selected_quarter_id() -> int:
         if not selected_quarter.value:
@@ -585,10 +759,22 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
 
     def run_action(action):
         try:
-            status.value = str(action())
+            show_feedback(str(action()))
             refresh()
         except Exception as exc:
-            status.value = f"Error: {exc}"
+            show_feedback(f"Error: {exc}", is_error=True)
+            safe_update()
+
+    def run_mail_action(action):
+        try:
+            message = str(action())
+            mail_settings_status.value = message
+            show_feedback(message)
+            refresh()
+        except Exception as exc:
+            message = f"Mail setup error: {exc}"
+            mail_settings_status.value = message
+            show_feedback(message, is_error=True)
             safe_update()
 
     def sync_document_paths_from_field() -> None:
@@ -679,6 +865,55 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
             raise ValueError("Select rows first, or use Select All / Select Next Batch.")
         return set(selected_counterparty_ids)
 
+    def current_row_page_size() -> int:
+        try:
+            return max(1, int(row_page_size.value or "20"))
+        except ValueError:
+            row_page_size.value = "20"
+            return 20
+
+    def paged_counterparty_rows() -> list[dict]:
+        total = len(visible_counterparty_rows)
+        page_size = current_row_page_size()
+        max_page_index = max(0, (total - 1) // page_size) if total else 0
+        row_page_index["value"] = min(max(row_page_index["value"], 0), max_page_index)
+        start = row_page_index["value"] * page_size
+        end = min(start + page_size, total)
+        previous_row_page_button.disabled = row_page_index["value"] <= 0 or total == 0
+        next_row_page_button.disabled = row_page_index["value"] >= max_page_index or total == 0
+        if total:
+            row_page_status.value = f"Showing rows {start + 1}-{end} of {total}; {len(selected_counterparty_ids)} selected."
+        else:
+            row_page_status.value = "No rows loaded."
+        return visible_counterparty_rows[start:end]
+
+    def render_compliance_rows() -> None:
+        compliance_row_details.controls = [
+            ft.Row([row_page_size, previous_row_page_button, next_row_page_button, row_page_status], wrap=True),
+            *_counterparty_detail_controls(
+                ft,
+                paged_counterparty_rows(),
+                selected_counterparty_ids,
+                toggle_counterparty_selection,
+            ),
+        ]
+
+    def reset_row_page_size() -> None:
+        row_page_index["value"] = 0
+        render_compliance_rows()
+        update_workflow_button_state()
+        safe_update()
+
+    def previous_row_page() -> str:
+        row_page_index["value"] = max(0, row_page_index["value"] - 1)
+        render_compliance_rows()
+        return "Moved to previous row page."
+
+    def next_row_page() -> str:
+        row_page_index["value"] += 1
+        render_compliance_rows()
+        return "Moved to next row page."
+
     def update_workflow_button_state() -> None:
         has_rows = bool(visible_counterparty_rows)
         has_selection = bool(selected_counterparty_ids)
@@ -724,7 +959,7 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
         elif readiness is not None and readiness["mail_mapping_errors"]:
             workflow_action_hint.value = "Fix mail mappings before sending mail."
         elif readiness is not None and not readiness["send_enabled"]:
-            workflow_action_hint.value = "Enable send_mode='send' with sender credentials in config.json to send live mail."
+            workflow_action_hint.value = "Enable send mode and configure Gmail SMTP or Webtel SMTP to send live mail."
         else:
             workflow_action_hint.value = "Selected rows are ready for document regeneration and live mail send."
 
@@ -734,12 +969,7 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
         visible_counterparty_rows[:] = controller.quarter_counterparty_statuses(quarter_id)
         visible_ids = {row["counterparty_id"] for row in visible_counterparty_rows}
         selected_counterparty_ids.intersection_update(visible_ids)
-        compliance_row_details.controls = _counterparty_detail_controls(
-            ft,
-            visible_counterparty_rows,
-            selected_counterparty_ids,
-            toggle_counterparty_selection,
-        )
+        render_compliance_rows()
         refresh_generated_document_options()
         update_workflow_button_state()
 
@@ -913,6 +1143,16 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
             compliance_detail.value = "Open a client's current quarter to see its compliance details."
             dashboard_cards.controls.append(_metric_card(ft, "No Current Quarter", 0))
             workflow_counts.controls.append(ft.Text("Workflow counts: none"))
+        if configure_client_id["value"] is None and selected_quarter.value:
+            try:
+                selected_quarter_id_value = int(selected_quarter.value)
+            except ValueError:
+                selected_quarter_id_value = None
+            if selected_quarter_id_value is not None:
+                selected_quarter_obj = next((item for item in quarters if item.id == selected_quarter_id_value), None)
+                if selected_quarter_obj is not None:
+                    configure_client_id["value"] = selected_quarter_obj.client_id
+
         client_quarters = [item for item in quarters if item.client_id == configure_client_id["value"]]
         configure_quarter.options = [
             ft.dropdown.Option(str(item.id), f"{item.financial_year} {item.quarter} ({'current' if item.current_quarter else item.status})")
@@ -957,10 +1197,28 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
             document_preview.value = ""
         settings_name = client_lookup.get(configure_client_id["value"], "")
         settings_title.value = f"Configure {settings_name}" if settings_name else "Select a client from Clients to configure."
+        mail_settings_title.value = f"Mail setup for {settings_name}" if settings_name else "Select a client from Clients to configure mail setup."
         configure_empty.visible = configure_client_id["value"] is None
         configure_form.visible = configure_client_id["value"] is not None
+        mail_setup_empty.visible = configure_client_id["value"] is None
+        mail_setup_form.visible = configure_client_id["value"] is not None
         if active_page["name"] == "Compliance" and selected_quarter.value:
             refresh_compliance_rows(int(selected_quarter.value))
+        settings = controller.get_mail_settings()
+        selected_mail_provider["value"] = normalized_mail_provider(settings["mail_provider"])
+        mail_provider.value = selected_mail_provider["value"]
+        send_mode.value = settings["send_mode"]
+        sender_email_field.value = settings["sender_email"]
+        fallback_providers_field.value = settings["fallback_providers"]
+        daily_send_limit_field.value = settings["daily_send_limit"]
+        per_email_delay_field.value = settings["per_email_delay_seconds"]
+        smtp_username_field.value = settings["smtp_username"]
+        smtp_password_field.value = "saved" if settings["smtp_password_saved"] else ""
+        mail_settings_status.value = (
+            f"Mail setup: provider={settings['mail_provider']}, connected={settings['connected_email'] or 'not connected'}, "
+            f"fallbacks={settings['fallback_providers'] or 'none'}, send_mode={settings['send_mode']}."
+        )
+        update_mail_setup_controls()
         safe_update()
 
     def on_selected_quarter_changed(_event) -> None:
@@ -977,6 +1235,14 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
 
     selected_quarter.on_change = on_selected_quarter_changed
     configure_quarter.on_change = on_configure_quarter_changed
+
+    def on_mail_provider_changed(event) -> None:
+        raw_provider = getattr(event, "data", None) or getattr(getattr(event, "control", None), "value", None) or mail_provider.value
+        selected_mail_provider["value"] = normalized_mail_provider(raw_provider)
+        update_mail_setup_controls()
+        safe_update()
+
+    mail_provider.on_change = on_mail_provider_changed
 
     async def pick_excel_path_only() -> None:
         # page.run_task(handler) invokes handler() with no ControlEvent argument.
@@ -1047,6 +1313,151 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
     def save_mail_template() -> str:
         return controller.save_mail_templates(configured_quarter_id(), mail_subject.value, mail_body.value)
 
+    def save_mail_settings_action() -> str:
+        provider = normalized_mail_provider()
+        smtp_host, smtp_port = smtp_defaults_for_provider(provider)
+        smtp_username = sender_email_field.value if provider == "webtel_smtp" else (smtp_username_field.value or "")
+        return controller.save_mail_settings(
+            mail_provider=provider,
+            send_mode=send_mode.value or "preview",
+            sender_email=sender_email_field.value or "",
+            fallback_providers=fallback_providers_field.value or "",
+            daily_send_limit=int(daily_send_limit_field.value or "500"),
+            per_email_delay_seconds=int(per_email_delay_field.value or "3"),
+            smtp_host=smtp_host,
+            smtp_port=smtp_port,
+            smtp_username=smtp_username,
+            smtp_password="" if (smtp_password_field.value or "").strip() == "saved" else (smtp_password_field.value or ""),
+        )
+
+    def primary_mail_setup_action() -> str:
+        return save_mail_settings_action()
+
+    def test_connection_action() -> str:
+        return controller.test_mail_connection()
+
+    def send_test_email_action() -> str:
+        recipient = (test_recipient_field.value or sender_email_field.value or "").strip()
+        if not test_recipient_field.value and recipient:
+            test_recipient_field.value = recipient
+        return controller.send_test_email(recipient)
+
+    def open_mail_setup() -> str:
+        show_page("Mail Setup")
+        return "Opened Mail Setup."
+
+    def normalized_mail_provider(raw_provider: object | None = None) -> str:
+        if raw_provider is None:
+            raw_provider = selected_mail_provider.get("value") or mail_provider.value or "gmail_smtp"
+        raw = str(raw_provider or "gmail_smtp").strip().lower()
+        if raw in {"gmail_smtp", "webtel_smtp"}:
+            return raw
+        if "webtel" in raw:
+            return "webtel_smtp"
+        if "gmail" in raw:
+            return "gmail_smtp"
+        return "gmail_smtp"
+
+    def smtp_defaults_for_provider(provider: str) -> tuple[str, int]:
+        if provider == "webtel_smtp":
+            return "connect.webtelconnect.com", 465
+        return "smtp.gmail.com", 587
+
+    def select_mail_provider(provider: str) -> None:
+        selected = normalized_mail_provider(provider)
+        selected_mail_provider["value"] = selected
+        if selected == "webtel_smtp":
+            fallback_providers_field.value = ""
+        update_mail_setup_controls()
+        safe_update()
+
+    save_mail_settings_button = ft.FilledButton("Save Mail Settings", on_click=lambda _event: run_mail_action(primary_mail_setup_action))
+    test_connection_button = ft.OutlinedButton("Test Connection", on_click=lambda _event: run_mail_action(test_connection_action))
+    send_test_email_button = ft.OutlinedButton("Send Test Email", on_click=lambda _event: run_mail_action(send_test_email_action))
+    select_webtel_smtp_button = ft.OutlinedButton("Use Webtel SMTP", on_click=lambda _event: select_mail_provider("webtel_smtp"))
+    select_gmail_smtp_button = ft.OutlinedButton("Use Gmail SMTP", on_click=lambda _event: select_mail_provider("gmail_smtp"))
+    provider_selector = ft.Column(
+        [
+            ft.Text("Choose how this sender account will authenticate:"),
+            ft.Row([select_gmail_smtp_button, select_webtel_smtp_button], wrap=True),
+            provider_choice_status,
+        ]
+    )
+    provider_next_steps_section = ft.Container(
+        padding=12,
+        border_radius=12,
+        bgcolor=ft.Colors.BLUE_GREY_50,
+        content=mail_setup_next_steps,
+    )
+    smtp_settings_section = _section(
+        ft,
+        "SMTP Credentials",
+        ft.Column(
+            [
+                ft.Text("Use this for a Gmail app password or Webtel mailbox password."),
+                smtp_defaults_text,
+                smtp_username_field,
+                smtp_password_field,
+            ]
+        ),
+    )
+    delivery_settings_section = _section(
+        ft,
+        "Delivery Settings",
+        ft.Column(
+            [
+                ft.Row([daily_send_limit_field, per_email_delay_field], wrap=True),
+                fallback_providers_field,
+                test_recipient_field,
+                ft.Row([save_mail_settings_button, test_connection_button, send_test_email_button], wrap=True),
+            ]
+        ),
+    )
+
+    def update_mail_setup_controls() -> None:
+        provider = normalized_mail_provider()
+        selected_mail_provider["value"] = provider
+        mail_provider.value = provider
+        webtel_selected = provider == "webtel_smtp"
+
+        select_webtel_smtp_button.disabled = webtel_selected
+        select_gmail_smtp_button.disabled = provider == "gmail_smtp"
+        smtp_username_field.visible = not webtel_selected
+
+        if provider == "webtel_smtp":
+            provider_choice_status.value = "Selected provider: Webtel SMTP. Enter only the sender email and mailbox password."
+            save_mail_settings_button.text = "Save Webtel SMTP"
+            sender_email_field.hint_text = "Example: ghanshyam@ngmks.in"
+            smtp_username_field.value = sender_email_field.value
+            smtp_defaults_text.value = "The app will use Webtel SMTP internally: connect.webtelconnect.com:465 with SSL/TLS."
+            smtp_password_field.label = "Webtel mailbox password"
+            fallback_providers_field.value = fallback_providers_field.value or ""
+            mail_setup_next_steps.value = (
+                "Next steps for Webtel SMTP:\n"
+                "1) Enter the sender email, for example ghanshyam@ngmks.in.\n"
+                "2) Enter the mailbox password in Webtel mailbox password.\n"
+                "3) Click Save Webtel SMTP, then Test Connection.\n"
+                "4) Send Test Email. The app uses connect.webtelconnect.com:465 SSL/TLS automatically."
+            )
+        else:
+            provider_choice_status.value = "Selected provider: Gmail SMTP. Gmail app password is required for this path."
+            save_mail_settings_button.text = "Save Mail Settings"
+            sender_email_field.hint_text = "Gmail sender email"
+            smtp_username_field.value = smtp_username_field.value or sender_email_field.value
+            smtp_defaults_text.value = "The app will use Gmail SMTP internally: smtp.gmail.com:587 with STARTTLS."
+            smtp_password_field.label = "SMTP password/app password"
+            fallback_providers_field.value = fallback_providers_field.value or "webtel_smtp"
+            mail_setup_next_steps.value = (
+                "Next steps for Gmail SMTP:\n"
+                "1) Enter Gmail sender email and app password.\n"
+                "2) The app uses smtp.gmail.com:587 automatically.\n"
+                "3) Click Test Connection, then Send Test Email.\n"
+                "4) Save Mail Settings and use send mode 'send' for live mail."
+            )
+
+    row_page_size.on_change = lambda _event: reset_row_page_size()
+    previous_row_page_button = ft.OutlinedButton("Previous Page", on_click=lambda _event: run_action(previous_row_page), disabled=True)
+    next_row_page_button = ft.OutlinedButton("Next Page", on_click=lambda _event: run_action(next_row_page), disabled=True)
     select_all_button = ft.OutlinedButton("Select All", on_click=lambda _event: run_action(select_all_counterparties), disabled=True)
     select_batch_button = ft.OutlinedButton("Select Next Batch", on_click=lambda _event: run_action(select_next_counterparty_batch), disabled=True)
     clear_selection_button = ft.OutlinedButton("Clear Selection", on_click=lambda _event: run_action(clear_counterparty_selection), disabled=True)
@@ -1118,6 +1529,7 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
             mail_subject,
             mail_body,
             mail_template_row,
+            ft.Row([ft.OutlinedButton("Open Mail Setup Tab", on_click=lambda _event: run_action(open_mail_setup))]),
             ft.Text("Step 3: upload document templates/static attachments. Use Liquid variables such as {{ party_name }} or {{ row.balance }}."),
             document_template_paths,
             document_paths_list,
@@ -1156,6 +1568,31 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
             [
                 configure_empty,
                 configure_form,
+            ],
+            scroll=ft.ScrollMode.AUTO,
+        ),
+    )
+    mail_setup_form = ft.Column(
+        [
+            mail_settings_title,
+            ft.Text("Choose Gmail SMTP or Webtel SMTP. The setup steps and required inputs below will change based on that choice."),
+            provider_selector,
+            ft.Row([send_mode, sender_email_field], wrap=True),
+            provider_next_steps_section,
+            smtp_settings_section,
+            delivery_settings_section,
+            mail_settings_status,
+            ft.Text("Where inputs are saved: non-secret mail settings go to the local app database; passwords go through keyring when available."),
+        ]
+    )
+    mail_setup_page = _section(
+        ft,
+        "Mail Setup",
+        ft.Column(
+            [
+                mail_setup_empty,
+                mail_setup_form,
+                ft.Text("Supported sending providers: Gmail SMTP and Webtel SMTP."),
             ],
             scroll=ft.ScrollMode.AUTO,
         ),
@@ -1225,13 +1662,13 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
                         ft.FilledButton("Queue + Preview Send", on_click=lambda _event: run_action(lambda: controller.queue_and_preview_send(selected_quarter_id(), mail_subject.value, mail_body.value))),
                     ]
                 ),
-                ft.Text("Preview send marks queued emails as sent without contacting Gmail. Existing CLI sending remains available for live SMTP sends."),
+                ft.Text("Preview send marks queued emails as sent without contacting the mail provider. Live sends use configured Gmail or Webtel SMTP settings."),
             ]
         ),
     )
 
-    page_cards.extend([home_page, clients_page, configure_page, compliance_page, workflow_page])
-    for card, name in zip(page_cards, ("Home", "Clients", "Configure", "Compliance", "Workflow"), strict=True):
+    page_cards.extend([home_page, clients_page, configure_page, mail_setup_page, compliance_page, workflow_page])
+    for card, name in zip(page_cards, ("Home", "Clients", "Configure", "Mail Setup", "Compliance", "Workflow"), strict=True):
         card.data = name
         card.visible = name == active_page["name"]
         nav_buttons.append(
@@ -1244,7 +1681,7 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
         )
 
     controls = [
-        ft.Text("Gmail Compliance Automation", size=28, weight=ft.FontWeight.BOLD),
+        ft.Text("Mail Compliance Automation", size=28, weight=ft.FontWeight.BOLD),
         ft.Text(f"Local database: {controller.db_path}", selectable=True),
         ft.Row([selected_quarter, ft.OutlinedButton("Refresh", on_click=lambda _event: refresh())]),
         ft.Row(
@@ -1265,6 +1702,15 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
         "mail_subject": mail_subject,
         "mail_body": mail_body,
     }
+
+
+def normalized_mail_provider_value(raw_provider: object | None = None) -> str:
+    raw = str(raw_provider or "gmail_smtp").strip().lower()
+    if raw in {"gmail_smtp", "webtel_smtp"}:
+        return raw
+    if "webtel" in raw:
+        return "webtel_smtp"
+    return "gmail_smtp"
 
 
 def _latest_quarter(quarters: list[ClientQuarter]) -> ClientQuarter | None:
@@ -1396,14 +1842,12 @@ def _counterparty_detail_controls(ft, rows: list[dict], selected_ids: set[int], 
     table = ft.DataTable(
         columns=[
             ft.DataColumn(ft.Text("Select")),
-            ft.DataColumn(ft.Text("Row")),
             ft.DataColumn(ft.Text("Creditor/Debtor")),
             ft.DataColumn(ft.Text("Email")),
             ft.DataColumn(ft.Text("Balance")),
             ft.DataColumn(ft.Text("Compliance")),
             ft.DataColumn(ft.Text("Docs")),
-            ft.DataColumn(ft.Text("Mail")),
-            ft.DataColumn(ft.Text("Sent")),
+            ft.DataColumn(ft.Text("Mail Sent")),
         ],
         rows=[
             ft.DataRow(
@@ -1415,7 +1859,6 @@ def _counterparty_detail_controls(ft, rows: list[dict], selected_ids: set[int], 
                             on_change=lambda event: on_toggle(int(event.control.data), bool(event.control.value)),
                         )
                     ),
-                    ft.DataCell(ft.Text(str(row["row"]), selectable=True)),
                     ft.DataCell(
                         ft.Column(
                             [
@@ -1429,7 +1872,6 @@ def _counterparty_detail_controls(ft, rows: list[dict], selected_ids: set[int], 
                     ft.DataCell(ft.Text(row["balance"], selectable=True)),
                     ft.DataCell(ft.Text(row["compliance_status"], selectable=True)),
                     ft.DataCell(ft.Text(row["document_status"], selectable=True)),
-                    ft.DataCell(ft.Text(row["mail_status"], selectable=True)),
                     ft.DataCell(ft.Text(row["mail_sent"], selectable=True)),
                 ]
             )
@@ -1437,7 +1879,6 @@ def _counterparty_detail_controls(ft, rows: list[dict], selected_ids: set[int], 
         ],
     )
     return [
-        ft.Text(f"Showing {len(rows)} row(s); {len(selected_ids)} selected.", selectable=True),
         ft.Row([table], scroll=ft.ScrollMode.AUTO),
     ]
 
@@ -1491,6 +1932,34 @@ def _mapping_errors_for_variables(variables: list[str], mappings: dict[str, obje
         elif source_type == "constant" and not constant_value:
             errors.append(f"{variable}: constant value is empty")
     return errors
+
+
+def _counterparty_to_confirmation_row(counterparty: Counterparty, subject: str, body: str):
+    from .models import ConfirmationRow, RowState
+
+    return ConfirmationRow(
+        row_id=str(counterparty.id or "test"),
+        excel_row_number=counterparty.source_row_number,
+        party=counterparty.party_type or "",
+        party_name=counterparty.party_name or "Test",
+        contact_name=counterparty.party_name or "Test",
+        contact_first_name=(counterparty.party_name or "Test").split(" ")[0],
+        contact_last_name=" ".join((counterparty.party_name or "Test").split(" ")[1:]),
+        email=counterparty.email,
+        cc=counterparty.cc or "",
+        subject=subject,
+        balance=counterparty.balance or "",
+        balance_nature="",
+        company_name="",
+        address="",
+        phone="",
+        balance_as_on_date="",
+        letter_date="",
+        auditor_reply_email="",
+        mail_body_override=body,
+        extra_attachment_paths=[],
+        state=RowState(ready_to_send="Y", verification_status="Passed"),
+    )
 
 
 def _normalize_user_path(raw: str) -> Path:

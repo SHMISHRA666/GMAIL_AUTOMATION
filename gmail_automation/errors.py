@@ -38,11 +38,11 @@ class ErrorClassifier:
         if isinstance(error, DocumentGenerationError):
             return ErrorInfo("DocumentGenerationError", True, message)
         if isinstance(error, smtplib.SMTPAuthenticationError):
-            return ErrorInfo("GmailPermanentError", False, "Gmail authentication failed")
+            return ErrorInfo("MailAuthenticationError", False, "Mail authentication failed")
         if isinstance(error, smtplib.SMTPRecipientsRefused):
-            return ErrorInfo("GmailPermanentError", False, message)
+            return ErrorInfo("MailRecipientError", False, message)
         if isinstance(error, (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, socket.timeout, TimeoutError)):
-            return ErrorInfo("GmailTemporaryError", True, message)
+            return ErrorInfo("MailTemporaryError", True, message)
         if isinstance(error, TrackingError):
             return ErrorInfo("TrackingError", True, message)
         if step.lower().startswith("validation"):

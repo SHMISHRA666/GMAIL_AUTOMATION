@@ -493,7 +493,7 @@ def test_modern_controller_send_mail_selected_requires_send_mode_and_credentials
         row_ids = {row["counterparty_id"] for row in controller.quarter_counterparty_statuses(quarter_id)}
         controller.regenerate_documents(quarter_id, row_ids)
 
-        with pytest.raises(ValueError, match="Enable send_mode='send'"):
+        with pytest.raises(ValueError, match="Enable send mode"):
             controller.send_mail_selected(quarter_id, row_ids, "Confirm {{ party_name }}", "Balance is {{ balance }}")
     finally:
         controller.close()
@@ -516,6 +516,34 @@ def test_modern_controller_mail_builtin_variables_do_not_require_mapping(tmp_pat
         readiness = controller.quarter_workflow_readiness(quarter_id)
 
         assert readiness["mail_mapping_errors"] == []
+    finally:
+        controller.close()
+
+
+def test_modern_controller_mail_settings_roundtrip(tmp_path: Path) -> None:
+    controller = ModernComplianceController(tmp_path / "modern.db")
+    try:
+        message = controller.save_mail_settings(
+            mail_provider="gmail_smtp",
+            send_mode="send",
+            sender_email="sender@example.com",
+            fallback_providers="webtel_smtp",
+            daily_send_limit=500,
+            per_email_delay_seconds=2,
+            smtp_host="smtp.gmail.com",
+            smtp_port=587,
+            smtp_username="sender@example.com",
+            smtp_password="secret",
+        )
+        settings = controller.get_mail_settings()
+
+        assert message == "Mail settings saved."
+        assert settings["mail_provider"] == "gmail_smtp"
+        assert settings["send_mode"] == "send"
+        assert settings["sender_email"] == "sender@example.com"
+        assert settings["fallback_providers"] == "webtel_smtp"
+        assert settings["daily_send_limit"] == "500"
+        assert settings["smtp_password_saved"] is True
     finally:
         controller.close()
 
