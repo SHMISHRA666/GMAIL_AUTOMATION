@@ -131,7 +131,7 @@ class ImportDAO:
             counterparty.party_name = values.get("Party Name", counterparty.party_name)
             counterparty.email = values.get("Email To(Address)", counterparty.email)
             counterparty.balance = values.get("Balance", counterparty.balance)
-            counterparty.status = values.get("Imported Compliance Status", counterparty.status)
+            counterparty.status = values.get("Imported Compliance Status", "non_compliant")
             counterparty.updated_at = utc_now_text()
 
         assert counterparty.id is not None
@@ -340,6 +340,11 @@ class WorkflowDAO:
         message.email_batch_id = email_batch_id
         message.body = body
         message.status = status
+        if status == "queued":
+            message.attempts = 0
+            message.next_retry_at = ""
+            message.retry_locked = False
+            message.error = ""
         message.updated_at = utc_now_text()
         self.session.add(message)
         self.session.commit()

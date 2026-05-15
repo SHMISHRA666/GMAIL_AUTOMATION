@@ -366,41 +366,75 @@ class DashboardService:
         self.workflow = WorkflowDAO(session)
 
     def compliance_summary(self, client_quarter_id: int) -> ComplianceSummary:
+        ComplianceService(self.session).reconcile_quarter(client_quarter_id)
         counterparties = self.imports.list_counterparties(client_quarter_id)
-        email_rows = self.session.exec(select(EmailMessage).where(EmailMessage.client_quarter_id == client_quarter_id))
-        emails_by_counterparty: dict[int, list[EmailMessage]] = {}
-        for message in email_rows:
-            emails_by_counterparty.setdefault(message.counterparty_id, []).append(message)
-
-        job_rows = self.session.exec(select(DocumentJob).where(DocumentJob.client_quarter_id == client_quarter_id))
-        jobs_by_counterparty: dict[int, list[DocumentJob]] = {}
-        for job in job_rows:
-            jobs_by_counterparty.setdefault(job.counterparty_id, []).append(job)
-
         counts = Counter()
         party_type_counts = Counter((counterparty.party_type or "Unspecified") for counterparty in counterparties)
         for counterparty in counterparties:
-            assert counterparty.id is not None
-            messages = emails_by_counterparty.get(counterparty.id, [])
-            jobs = jobs_by_counterparty.get(counterparty.id, [])
-            if messages and all(message.status == "sent" for message in messages):
-                counts["fully_compliant"] += 1
-            elif messages or any(job.status in {"generated", "failed", "retry_scheduled"} for job in jobs):
-                counts["partially_compliant"] += 1
-            elif counterparty.status in {"non_compliant", "partially_compliant", "fully_compliant"}:
-                counts[counterparty.status] += 1
-            else:
-                counts["non_compliant"] += 1
+            counts["fully_compliant" if counterparty.status == "compliant" else "non_compliant"] += 1
 
         return ComplianceSummary(
             total=len(counterparties),
             non_compliant=counts["non_compliant"],
-            partially_compliant=counts["partially_compliant"],
+            partially_compliant=0,
             fully_compliant=counts["fully_compliant"],
             party_type_counts=dict(party_type_counts),
             generation_counts=dict(self.workflow.generated_document_counts(client_quarter_id)),
             email_counts=dict(self.workflow.email_status_counts(client_quarter_id)),
         )
+
+
+class ComplianceService:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def reconcile_all(self) -> int:
+        changed = 0
+        quarter_ids = [
+            quarter.id
+            for quarter in self.session.exec(select(ClientQuarter))
+            if quarter.id is not None
+        ]
+        for quarter_id in quarter_ids:
+            changed += self.reconcile_quarter(quarter_id)
+        return changed
+
+    def reconcile_quarter(self, client_quarter_id: int) -> int:
+        counterparties = list(self.session.exec(select(Counterparty).where(Counterparty.client_quarter_id == client_quarter_id)))
+        if not counterparties:
+            return 0
+        counterparty_ids = [counterparty.id for counterparty in counterparties if counterparty.id is not None]
+        if not counterparty_ids:
+            return 0
+
+        generated_ids = {
+            document.counterparty_id
+            for document in self.session.exec(select(GeneratedDocument).where(GeneratedDocument.counterparty_id.in_(counterparty_ids)))
+        }
+        sent_ids = {
+            message.counterparty_id
+            for message in self.session.exec(
+                select(EmailMessage).where(
+                    EmailMessage.client_quarter_id == client_quarter_id,
+                    EmailMessage.counterparty_id.in_(counterparty_ids),
+                    EmailMessage.status == "sent",
+                )
+            )
+        }
+
+        changed = 0
+        for counterparty in counterparties:
+            if counterparty.id is None:
+                continue
+            expected_status = "compliant" if counterparty.id in generated_ids and counterparty.id in sent_ids else "non_compliant"
+            if counterparty.status != expected_status:
+                counterparty.status = expected_status
+                counterparty.updated_at = utc_now_text()
+                self.session.add(counterparty)
+                changed += 1
+        if changed:
+            self.session.commit()
+        return changed
 
 
 class WorkflowService:
@@ -446,6 +480,7 @@ class WorkflowService:
                 self.session.add(job)
                 self.session.commit()
                 results.append(GeneratedJobResult(job.id, job.counterparty_id, job.status, error=str(exc)))
+        ComplianceService(self.session).reconcile_quarter(client_quarter_id)
         return results
 
     def regenerate_documents(self, client_quarter_id: int, counterparty_ids: set[int] | None = None) -> list[GeneratedJobResult]:
@@ -505,6 +540,7 @@ class WorkflowService:
                 self.session.add(job)
                 self.session.commit()
                 results.append(GeneratedJobResult(job.id, job.counterparty_id, job.status, error=str(exc)))
+        ComplianceService(self.session).reconcile_quarter(client_quarter_id)
         self.audit.log("documents_regenerated", f"Regenerated {len(results)} document job(s)", client_quarter_id=client_quarter_id)
         return results
 
@@ -569,6 +605,7 @@ class WorkflowService:
                 message.updated_at = utc_now_text()
                 self.session.add(message)
                 self.session.commit()
+        ComplianceService(self.session).reconcile_quarter(client_quarter_id)
         event_type = "emails_preview_sent" if preview else "emails_sent"
         self.audit.log(event_type, f"Processed {sent_count} queued email(s)", client_quarter_id=client_quarter_id)
         return sent_count
@@ -781,9 +818,7 @@ def _imported_compliance_status(values: dict[str, str]) -> str:
     if _truthy(values.get("BounceReceived", "")):
         return "non_compliant"
     if _truthy(values.get("ReplyReceived", "")) or _truthy(values.get("MainSent", "")):
-        return "fully_compliant"
-    if _truthy(values.get("ReadyToSend", "")) or _truthy(values.get("AttachmentCreated", "")):
-        return "partially_compliant"
+        return "compliant"
     return ""
 
 
@@ -799,10 +834,28 @@ def _status_from_text(value: str) -> str:
     if not text:
         return ""
     if text in {"fully_compliant", "full", "complete", "completed", "compliant", "sent", "mail_sent", "main_sent", "reply_received", "yes", "y", "true"}:
-        return "fully_compliant"
-    if text in {"partially_compliant", "partial", "in_progress", "generated", "attachment_created", "ready", "ready_to_send", "queued"}:
-        return "partially_compliant"
-    if text in {"non_compliant", "not_compliant", "pending", "not_started", "failed", "bounce", "bounced", "bounce_received", "no", "n", "false"}:
+        return "compliant"
+    if text in {
+        "partially_compliant",
+        "partial",
+        "in_progress",
+        "generated",
+        "attachment_created",
+        "ready",
+        "ready_to_send",
+        "queued",
+        "non_compliant",
+        "not_compliant",
+        "pending",
+        "not_started",
+        "failed",
+        "bounce",
+        "bounced",
+        "bounce_received",
+        "no",
+        "n",
+        "false",
+    }:
         return "non_compliant"
     return ""
 

@@ -11,8 +11,9 @@ from gmail_automation.db import init_db
 from gmail_automation.db_models import Counterparty, CounterpartyField, DocumentJob, EmailMessage, GeneratedDocument
 from gmail_automation.docx_utils import build_docx_from_paragraphs, extract_docx_text
 from gmail_automation.liquid_utils import extract_liquid_variables, render_liquid_template
-from gmail_automation.modern_ui import ModernComplianceController, _attach_file_picker, build_modern_ui_controls
+from gmail_automation.modern_ui import ModernComplianceController, _attach_file_picker, _load_smtp_password, build_modern_ui_controls
 from gmail_automation.services import ClientService, DashboardService, ImportService, TemplateService, WorkflowService
+from gmail_automation.settings_store import SettingsService
 
 
 def test_liquid_variable_extraction_and_strict_rendering() -> None:
@@ -79,16 +80,16 @@ def test_excel_import_status_columns_seed_compliance_summary(tmp_path: Path) -> 
         summary = DashboardService(session).compliance_summary(quarter.id)
 
     assert {row.party_name: row.status for row in rows} == {
-        "Alpha Finance": "fully_compliant",
-        "Beta Bank": "partially_compliant",
+        "Alpha Finance": "non_compliant",
+        "Beta Bank": "non_compliant",
         "Gamma Capital": "non_compliant",
     }
     assert fields["Alpha Finance"]["Status"] == "Sent"
     assert fields["Beta Bank"]["ReadyToSend"] == "Y"
     assert fields["Gamma Capital"]["BounceReceived"] == "Yes"
-    assert summary.fully_compliant == 1
-    assert summary.partially_compliant == 1
-    assert summary.non_compliant == 1
+    assert summary.fully_compliant == 0
+    assert summary.partially_compliant == 0
+    assert summary.non_compliant == 3
     assert summary.party_type_counts == {"Creditor": 3}
 
 
@@ -141,6 +142,7 @@ def test_templates_mappings_generation_and_dashboard_queries(tmp_path: Path) -> 
 
         persisted_jobs = session.exec(select(DocumentJob).where(DocumentJob.client_quarter_id == quarter.id)).all()
         persisted_messages = session.exec(select(EmailMessage).where(EmailMessage.client_quarter_id == quarter.id)).all()
+        persisted_counterparties = session.exec(select(Counterparty).where(Counterparty.client_quarter_id == quarter.id)).all()
 
     assert len(jobs) == 2
     assert len(generated) == 2
@@ -153,6 +155,7 @@ def test_templates_mappings_generation_and_dashboard_queries(tmp_path: Path) -> 
     assert email_counts["sent"] == 2
     assert {job.status for job in persisted_jobs} == {"generated"}
     assert {message.status for message in persisted_messages} == {"sent"}
+    assert {counterparty.status for counterparty in persisted_counterparties} == {"compliant"}
 
 
 def test_document_template_files_generate_for_all_counterparties(tmp_path: Path) -> None:
@@ -287,9 +290,9 @@ def test_modern_controller_import_reports_legacy_status_wiring(tmp_path: Path) -
         summary = controller.get_client_compliance_summary(created["id"])["summary"]
 
         assert "Legacy status columns wired: BounceReceived, ReadyToSend, Status." in message
-        assert summary.fully_compliant == 1
-        assert summary.partially_compliant == 1
-        assert summary.non_compliant == 1
+        assert summary.fully_compliant == 0
+        assert summary.partially_compliant == 0
+        assert summary.non_compliant == 3
         assert summary.party_type_counts == {"Creditor": 3}
     finally:
         controller.close()
@@ -394,6 +397,7 @@ def test_modern_controller_row_level_compliance_detail_tracks_workflow_steps(tmp
 
         assert [row["party_name"] for row in imported_rows] == ["Alpha Finance", "Beta Bank"]
         assert {row["document_status"] for row in imported_rows} == {"not generated"}
+        assert {row["compliance_status"] for row in imported_rows} == {"non_compliant"}
         assert {row["mail_status"] for row in imported_rows} == {"not generated"}
         assert {row["mail_sent"] for row in imported_rows} == {"No"}
 
@@ -407,6 +411,7 @@ def test_modern_controller_row_level_compliance_detail_tracks_workflow_steps(tmp
 
         assert {row["document_status"] for row in completed_rows} == {"generated (1)"}
         assert {row["document_count"] for row in completed_rows} == {1}
+        assert {row["compliance_status"] for row in completed_rows} == {"compliant"}
         assert {row["mail_status"] for row in completed_rows} == {"sent"}
         assert {row["mail_sent"] for row in completed_rows} == {"Yes"}
     finally:
@@ -434,16 +439,37 @@ def test_modern_controller_selected_workflow_retrigger_affects_only_selected_row
         with pytest.raises(ValueError, match="Generate documents"):
             controller.queue_and_preview_send_selected(quarter_id, {alpha_id}, "Confirm {{ party_name }}", "Balance is {{ balance }}")
         assert controller.regenerate_documents(quarter_id, {alpha_id}) == "Regenerated 1 selected document job(s); 0 need attention."
+        with Session(controller.engine) as session:
+            session.add(
+                EmailMessage(
+                    client_quarter_id=quarter_id,
+                    counterparty_id=alpha_id,
+                    to_email="alpha@example.com",
+                    subject="Old failed message",
+                    status="failed",
+                    attempts=4,
+                    retry_locked=True,
+                    next_retry_at="2099-01-01 00:00:00",
+                    error="old authentication failure",
+                )
+            )
+            session.commit()
         assert controller.queue_and_preview_send_selected(quarter_id, {alpha_id}, "Confirm {{ party_name }}", "Balance is {{ balance }}") == (
             "Queued 1 selected email(s); marked 1 sent in preview mode."
         )
 
         completed_rows = {row["party_name"]: row for row in controller.quarter_counterparty_statuses(quarter_id)}
+        with Session(controller.engine) as session:
+            alpha_messages = list(session.exec(select(EmailMessage).where(EmailMessage.counterparty_id == alpha_id)))
 
         assert completed_rows["Alpha Finance"]["document_status"] == "generated (1)"
+        assert completed_rows["Alpha Finance"]["compliance_status"] == "compliant"
         assert completed_rows["Alpha Finance"]["mail_status"] == "sent"
         assert completed_rows["Alpha Finance"]["mail_sent"] == "Yes"
+        assert {message.retry_locked for message in alpha_messages} == {False}
+        assert {message.error for message in alpha_messages} == {""}
         assert completed_rows["Beta Bank"]["document_status"] == "not generated"
+        assert completed_rows["Beta Bank"]["compliance_status"] == "non_compliant"
         assert completed_rows["Beta Bank"]["mail_status"] == "not generated"
         assert completed_rows["Beta Bank"]["mail_sent"] == "No"
     finally:
@@ -544,6 +570,8 @@ def test_modern_controller_mail_settings_roundtrip(tmp_path: Path) -> None:
         assert settings["fallback_providers"] == "webtel_smtp"
         assert settings["daily_send_limit"] == "500"
         assert settings["smtp_password_saved"] is True
+        with Session(controller.engine) as session:
+            assert _load_smtp_password(SettingsService(session), "gmail_smtp", "sender@example.com") == "secret"
     finally:
         controller.close()
 
@@ -553,13 +581,15 @@ def test_modern_controller_generated_document_preview_for_selected_counterparty(
     workbook_path = _sample_workbook(tmp_path)
     letter_path = tmp_path / "letter.txt"
     letter_path.write_text("Letter for {{ party_name }}: {{ balance }}", encoding="utf-8")
+    note_path = tmp_path / "note.txt"
+    note_path.write_text("Note for {{ party_name }}: {{ balance }}", encoding="utf-8")
 
     try:
         created = controller.create_client_record("Purple United")
         controller.create_quarter(created["id"], "2026-27", "Q1")
         quarter_id = controller.current_quarter_id_for_client(created["id"])
         controller.import_workbook(quarter_id, str(workbook_path), client_id=created["id"])
-        controller.save_document_templates(quarter_id, str(letter_path))
+        controller.save_document_templates(quarter_id, f"{letter_path}\n{note_path}")
         assert controller.auto_map_variables(quarter_id) == "Mappings valid."
         assert controller.regenerate_documents(quarter_id, {row["counterparty_id"] for row in controller.quarter_counterparty_statuses(quarter_id)}).startswith(
             "Regenerated"
@@ -570,10 +600,13 @@ def test_modern_controller_generated_document_preview_for_selected_counterparty(
         generated_docs = controller.generated_documents_for_counterparty(quarter_id, alpha_id)
         preview = controller.preview_generated_document(generated_docs[0]["id"])
 
-        assert generated_docs
+        assert len(generated_docs) == 2
+        assert next(row for row in rows if row["party_name"] == "Alpha Finance")["document_count"] == 2
+        assert len(next(row for row in rows if row["party_name"] == "Alpha Finance")["documents"]) == 2
         assert generated_docs[0]["file_path"].endswith(".txt")
         assert "Alpha Finance" in preview
         assert "1000" in preview
+        assert "Alpha Finance" in controller.preview_generated_document(generated_docs[1]["id"])
     finally:
         controller.close()
 

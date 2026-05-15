@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from sqlmodel import Session, select
@@ -12,7 +13,7 @@ from .docx_utils import extract_docx_text
 from .errors import ValidationError
 from .mail_sender import create_mail_sender
 from .models import SendConfig
-from .services import ClientService, DashboardService, ImportService, STATUS_COLUMNS, TemplateService, WorkflowService
+from .services import ClientService, ComplianceService, DashboardService, ImportService, STATUS_COLUMNS, TemplateService, WorkflowService
 from .settings_store import SettingsService
 
 
@@ -23,6 +24,17 @@ class ModernComplianceController:
 
     def close(self) -> None:
         self.engine.dispose()
+
+    def start_background_compliance_reconcile(self) -> None:
+        def worker() -> None:
+            try:
+                with Session(self.engine) as session:
+                    ComplianceService(session).reconcile_all()
+            except Exception:
+                # Reconciliation also runs during dashboard reads and workflow updates.
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def snapshot(self, selected_quarter_id: int | None = None) -> dict:
         with Session(self.engine) as session:
@@ -321,6 +333,7 @@ class ModernComplianceController:
         with Session(self.engine) as session:
             if session.get(ClientQuarter, client_quarter_id) is None:
                 raise ValueError("Select a quarter before viewing row-level compliance.")
+            ComplianceService(session).reconcile_quarter(client_quarter_id)
             counterparties = list(
                 session.exec(
                     select(Counterparty)
@@ -357,6 +370,7 @@ class ModernComplianceController:
                         "compliance_status": counterparty.status,
                         "document_status": _document_status(jobs, documents),
                         "document_count": len(documents),
+                        "documents": [_generated_document_summary(document) for document in documents if document.id is not None],
                         "mail_status": latest_message.status if latest_message else "not generated",
                         "mail_sent": "Yes" if latest_message and latest_message.status == "sent" else "No",
                     }
@@ -451,7 +465,7 @@ class ModernComplianceController:
                 "daily_send_limit": str(config.daily_send_limit),
                 "per_email_delay_seconds": str(config.per_email_delay_seconds),
                 "smtp_username": config.smtp_username or config.sender_email,
-                "smtp_password_saved": bool(settings.get_value("mail.smtp_password", "")),
+                "smtp_password_saved": bool(config.smtp_password or config.app_password),
                 "connected_email": config.sender_email,
             }
 
@@ -483,7 +497,7 @@ class ModernComplianceController:
             settings.set_value("mail.smtp_use_ssl", "true" if provider == "webtel_smtp" or int(smtp_port) == 465 else "false")
             settings.set_value("mail.smtp_username", (smtp_username or sender_email or "").strip())
             if smtp_password.strip():
-                settings.set_value("mail.smtp_password", smtp_password.strip(), secret=True)
+                _save_smtp_password(settings, provider, sender_email, smtp_password.strip())
         return "Mail settings saved."
 
     def test_mail_connection(self) -> str:
@@ -547,7 +561,7 @@ class ModernComplianceController:
                 config.smtp_use_starttls = False
                 config.smtp_use_ssl = True
             config.smtp_username = settings.get_value("mail.smtp_username", config.smtp_username or config.sender_email)
-            config.smtp_password = settings.get_value("mail.smtp_password", config.smtp_password or config.app_password)
+            config.smtp_password = _load_smtp_password(settings, config.mail_provider, config.sender_email, config.smtp_password or config.app_password)
         return config
 
     def _counterparty_ids_with_generated_documents(self, client_quarter_id: int) -> set[int]:
@@ -608,6 +622,7 @@ def launch_modern_ui(db_path: Path | None = None) -> int:
         raise RuntimeError("Flet is required for the modern UI. Install requirements.txt first.") from exc
 
     controller = ModernComplianceController(db_path)
+    controller.start_background_compliance_reconcile()
 
     def main(page: ft.Page) -> None:
         page.title = "Gmail Compliance Automation"
@@ -640,12 +655,17 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
     clients_list = ft.Column(spacing=4)
     compliance_clients = ft.Column(spacing=8)
     configure_client_id = {"value": None}
+    compliance_detail_visible = {"value": False}
     settings_title = ft.Text("Select a client from Clients to configure inputs and mapping.", selectable=True)
     configure_empty = ft.Text("Create a client or use Configure on an existing client to continue.", selectable=True)
     mail_settings_title = ft.Text("Select a client from Clients to configure mail setup.", selectable=True)
     mail_setup_empty = ft.Text("Create/select a client before configuring mail setup.", selectable=True)
     workflow_context = ft.Text("Select a client quarter before running workflow actions.", selectable=True)
+    compliance_detail_header = ft.Text("Select a client's current quarter.", size=24, weight=ft.FontWeight.BOLD, selectable=True)
     compliance_detail = ft.Text("Open a client's current quarter to see its compliance details.", selectable=True)
+    compliance_actions_allowed = ft.Text("Actions become available after opening a current quarter.", selectable=True)
+    compliance_empty_detail = ft.Text("Choose Current Quarter on an organization card to open the detailed row workflow view.", selectable=True)
+    compliance_intro = ft.Text("Organizations are shown first. Open Current Quarter to view detailed row actions and statuses.")
     compliance_row_details = ft.Column(spacing=8)
     selected_counterparty_ids: set[int] = set()
     visible_counterparty_rows: list[dict] = []
@@ -661,7 +681,12 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
     workflow_action_hint = ft.Text("Open a current quarter and select rows to enable workflow actions.", selectable=True)
     generated_doc_hint = ft.Text("Select exactly one row with generated docs to preview output.", selectable=True)
     generated_doc_dropdown = ft.Dropdown(label="Generated document", expand=True)
-    generated_doc_preview = ft.TextField(label="Generated document preview", multiline=True, min_lines=10, read_only=True)
+    generated_doc_preview = ft.TextField(label="Generated document preview", multiline=True, min_lines=8, read_only=True, height=360)
+    generated_doc_preview_title = ft.Text("Generated Docs Preview", size=18, weight=ft.FontWeight.BOLD, selectable=True)
+    generated_docs_rows_panel = ft.Column(spacing=8)
+    generated_docs_rows_stack = ft.Stack()
+    generated_doc_preview_dismiss = ft.Container(visible=False)
+    generated_doc_preview_bubble = ft.Container(visible=False)
 
     workbook_path = ft.TextField(
         label="Master Excel path",
@@ -722,6 +747,16 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
     def safe_update() -> None:
         if page is not None:
             page.update()
+
+    def show_generated_doc_bubble(title: str = "Generated Docs Preview") -> None:
+        generated_doc_preview_title.value = title
+        generated_doc_preview_bubble.width = _preview_bubble_width(page)
+        generated_doc_preview_dismiss.visible = True
+        generated_doc_preview_bubble.visible = True
+
+    def hide_generated_doc_bubble() -> None:
+        generated_doc_preview_dismiss.visible = False
+        generated_doc_preview_bubble.visible = False
 
     def show_feedback(message: str, is_error: bool = False) -> None:
         status.value = message
@@ -852,8 +887,16 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
         document_preview.value = controller.preview_document_template(int(configured_document_template.value))
         return "Loaded template preview."
 
-    def show_page(name: str) -> None:
+    def show_page(name: str, keep_compliance_detail: bool = False) -> None:
         active_page["name"] = name
+        if name == "Compliance" and not keep_compliance_detail:
+            compliance_detail_visible["value"] = False
+            selected_counterparty_ids.clear()
+            hide_generated_doc_bubble()
+            compliance_intro.visible = True
+            compliance_clients.visible = True
+            compliance_empty_detail.visible = True
+            compliance_detail_container.visible = False
         for card in page_cards:
             card.visible = card.data == name
         for button in nav_buttons:
@@ -862,7 +905,7 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
 
     def selected_workflow_ids() -> set[int]:
         if not selected_counterparty_ids:
-            raise ValueError("Select rows first, or use Select All / Select Next Batch.")
+            raise ValueError("Select rows first, or use Select Current Page / Select All / Select Next Batch.")
         return set(selected_counterparty_ids)
 
     def current_row_page_size() -> int:
@@ -887,6 +930,17 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
             row_page_status.value = "No rows loaded."
         return visible_counterparty_rows[start:end]
 
+    def current_page_counterparty_rows() -> list[dict]:
+        total = len(visible_counterparty_rows)
+        if not total:
+            return []
+        page_size = current_row_page_size()
+        max_page_index = max(0, (total - 1) // page_size)
+        row_page_index["value"] = min(max(row_page_index["value"], 0), max_page_index)
+        start = row_page_index["value"] * page_size
+        end = min(start + page_size, total)
+        return visible_counterparty_rows[start:end]
+
     def render_compliance_rows() -> None:
         compliance_row_details.controls = [
             ft.Row([row_page_size, previous_row_page_button, next_row_page_button, row_page_status], wrap=True),
@@ -895,8 +949,11 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
                 paged_counterparty_rows(),
                 selected_counterparty_ids,
                 toggle_counterparty_selection,
+                preview_generated_document_from_row,
             ),
         ]
+        if page is None:
+            return
 
     def reset_row_page_size() -> None:
         row_page_index["value"] = 0
@@ -928,6 +985,7 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
         selected_single_with_docs = len(selected_rows) == 1 and selected_rows[0]["document_count"] > 0
 
         select_all_button.disabled = not has_rows
+        select_current_page_button.disabled = not has_rows
         select_batch_button.disabled = not has_rows
         clear_selection_button.disabled = not has_selection
         regenerate_selected_button.disabled = not (
@@ -1009,6 +1067,7 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
         generated_doc_dropdown.value = str(docs[-1]["id"])
         generated_doc_preview.value = controller.preview_generated_document(int(generated_doc_dropdown.value))
         generated_doc_hint.value = f"Loaded {len(docs)} generated document(s)."
+        show_generated_doc_bubble(f"Preview: {Path(docs[-1]['file_path']).name}")
         update_workflow_button_state()
         return f"Loaded {len(docs)} generated document(s) for preview."
 
@@ -1016,7 +1075,41 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
         if not generated_doc_dropdown.value:
             raise ValueError("Load and select a generated document first.")
         generated_doc_preview.value = controller.preview_generated_document(int(generated_doc_dropdown.value))
+        selected_label = next(
+            (
+                getattr(option, "text", None) or str(getattr(option, "key", "Generated Docs Preview"))
+                for option in generated_doc_dropdown.options
+                if str(getattr(option, "key", "")) == str(generated_doc_dropdown.value)
+            ),
+            "Generated Docs Preview",
+        )
+        show_generated_doc_bubble(f"Preview: {selected_label}")
         return "Updated generated document preview."
+
+    def preview_generated_document_from_row(counterparty_id: int, generated_document_id: int) -> None:
+        try:
+            docs = controller.generated_documents_for_counterparty(selected_quarter_id(), counterparty_id)
+            if not docs:
+                generated_doc_dropdown.options = []
+                generated_doc_dropdown.value = None
+                generated_doc_preview.value = ""
+                generated_doc_hint.value = "No generated docs found for this row."
+                safe_update()
+                return
+            generated_doc_dropdown.options = [
+                ft.dropdown.Option(str(doc["id"]), f"{Path(doc['file_path']).name} ({doc['created_at']})")
+                for doc in docs
+            ]
+            selected_doc = next((doc for doc in docs if doc["id"] == generated_document_id), docs[0])
+            generated_doc_dropdown.value = str(selected_doc["id"])
+            generated_doc_preview.value = controller.preview_generated_document(int(selected_doc["id"]))
+            generated_doc_hint.value = f"Hover or click any generated doc chip in the rows tab. Loaded {len(docs)} doc(s) for this row."
+            show_generated_doc_bubble(f"Preview: {Path(selected_doc['file_path']).name}")
+            update_workflow_button_state()
+        except Exception as exc:
+            generated_doc_preview.value = f"Error: {exc}"
+            generated_doc_hint.value = "Could not load generated document preview."
+        safe_update()
 
     def toggle_counterparty_selection(counterparty_id: int, selected: bool) -> None:
         if selected:
@@ -1032,6 +1125,14 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
         selected_counterparty_ids.update(row["counterparty_id"] for row in visible_counterparty_rows)
         refresh_compliance_rows()
         return f"Selected {len(selected_counterparty_ids)} row(s)."
+
+    def select_current_page_counterparties() -> str:
+        if not visible_counterparty_rows:
+            refresh_compliance_rows()
+        page_rows = current_page_counterparty_rows()
+        selected_counterparty_ids.update(row["counterparty_id"] for row in page_rows)
+        refresh_compliance_rows()
+        return f"Selected {len(page_rows)} row(s) on the current page."
 
     def clear_counterparty_selection() -> str:
         selected_counterparty_ids.clear()
@@ -1063,7 +1164,9 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
     def open_client_compliance(client_id: int) -> str:
         quarter_id = controller.current_quarter_id_for_client(client_id)
         selected_quarter.value = str(quarter_id)
-        show_page("Compliance")
+        compliance_detail_visible["value"] = True
+        hide_generated_doc_bubble()
+        show_page("Compliance", keep_compliance_detail=True)
         refresh_compliance_rows(quarter_id)
         return "Opened client compliance."
 
@@ -1109,22 +1212,28 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
 
         selected = snapshot["selected_quarter"]
         summary = snapshot["summary"]
+        detail_open = bool(compliance_detail_visible["value"] and selected and selected.id is not None)
+        compliance_intro.visible = not detail_open
+        compliance_clients.visible = not detail_open
+        compliance_empty_detail.visible = not detail_open
+        compliance_detail_container.visible = detail_open
         dashboard_cards.controls.clear()
         workflow_counts.controls.clear()
         if selected and summary:
             selected_label = next((_quarter_label(item, client_lookup) for item in quarters if str(item.id) == selected_quarter.value), "none")
             current_label = _quarter_label(current, client_lookup) if current else "none"
+            selected_client_name = client_lookup.get(selected.client_id, "Selected organization")
+            compliance_detail_header.value = f"{selected_client_name} - {selected.financial_year} {selected.quarter}"
             current_summary.value = (
                 f"Current quarter running: {current_label}. "
-                f"Compliance: {summary.fully_compliant}/{summary.total} fully, "
-                f"{summary.partially_compliant} partial, {summary.non_compliant} non."
+                f"Compliance: {summary.fully_compliant}/{summary.total} counterparties compliant, "
+                f"{summary.non_compliant} non-compliant. Client status: {_client_compliance_status(summary)}."
             )
             workflow_context.value = f"Workflow target: {selected_label}"
             dashboard_cards.controls.extend(
                 [
                     _metric_card(ft, "Non Compliant", summary.non_compliant),
-                    _metric_card(ft, "Partially Compliant", summary.partially_compliant),
-                    _metric_card(ft, "Fully Compliant", summary.fully_compliant),
+                    _metric_card(ft, "Compliant", summary.fully_compliant),
                     _metric_card(ft, "Counterparties", summary.total),
                 ]
             )
@@ -1132,15 +1241,27 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
                 workflow_counts.controls.append(ft.Text(f"{label}: {_count_summary(values)}"))
             workflow_counts.controls.append(ft.Text(f"Counterparties: {_count_summary(summary.party_type_counts)}"))
             compliance_detail.value = (
-                f"Selected: {selected_label}. {summary.fully_compliant}/{summary.total} fully compliant, "
-                f"{summary.partially_compliant} partial, {summary.non_compliant} non. "
+                f"Selected: {selected_label}. Client status: {_client_compliance_status(summary)}. "
+                f"{summary.fully_compliant}/{summary.total} counterparties compliant, {summary.non_compliant} non-compliant. "
                 f"Types: {_count_summary(summary.party_type_counts)}. "
                 f"Docs: {_count_summary(summary.generation_counts)}. Emails: {_count_summary(summary.email_counts)}."
             )
+            try:
+                readiness = controller.quarter_workflow_readiness(int(selected.id))
+                allowed = []
+                if readiness["can_generate_documents"]:
+                    allowed.append("regenerate documents")
+                if readiness["can_send_mail"]:
+                    allowed.append("send selected mail")
+                compliance_actions_allowed.value = "Actions allowed: " + (", ".join(allowed) if allowed else "finish configuration before row actions are enabled")
+            except Exception as exc:
+                compliance_actions_allowed.value = f"Actions allowed: unavailable ({exc})"
         else:
             current_summary.value = "No current quarter yet. Create a client, then configure a quarter."
             workflow_context.value = "Create or select a client quarter before running workflow actions."
+            compliance_detail_header.value = "Select a client's current quarter."
             compliance_detail.value = "Open a client's current quarter to see its compliance details."
+            compliance_actions_allowed.value = "Actions become available after opening a current quarter."
             dashboard_cards.controls.append(_metric_card(ft, "No Current Quarter", 0))
             workflow_counts.controls.append(ft.Text("Workflow counts: none"))
         if configure_client_id["value"] is None and selected_quarter.value:
@@ -1202,7 +1323,7 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
         configure_form.visible = configure_client_id["value"] is not None
         mail_setup_empty.visible = configure_client_id["value"] is None
         mail_setup_form.visible = configure_client_id["value"] is not None
-        if active_page["name"] == "Compliance" and selected_quarter.value:
+        if active_page["name"] == "Compliance" and compliance_detail_visible["value"] and selected_quarter.value:
             refresh_compliance_rows(int(selected_quarter.value))
         settings = controller.get_mail_settings()
         selected_mail_provider["value"] = normalized_mail_provider(settings["mail_provider"])
@@ -1455,17 +1576,31 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
                 "4) Save Mail Settings and use send mode 'send' for live mail."
             )
 
+    def on_generated_doc_dropdown_changed(_event) -> None:
+        if not generated_doc_dropdown.value:
+            update_workflow_button_state()
+            safe_update()
+            return
+        try:
+            status.value = preview_selected_generated_document()
+            update_workflow_button_state()
+        except Exception as exc:
+            show_feedback(f"Error: {exc}", is_error=True)
+            return
+        safe_update()
+
     row_page_size.on_change = lambda _event: reset_row_page_size()
     previous_row_page_button = ft.OutlinedButton("Previous Page", on_click=lambda _event: run_action(previous_row_page), disabled=True)
     next_row_page_button = ft.OutlinedButton("Next Page", on_click=lambda _event: run_action(next_row_page), disabled=True)
     select_all_button = ft.OutlinedButton("Select All", on_click=lambda _event: run_action(select_all_counterparties), disabled=True)
+    select_current_page_button = ft.OutlinedButton("Select Current Page", on_click=lambda _event: run_action(select_current_page_counterparties), disabled=True)
     select_batch_button = ft.OutlinedButton("Select Next Batch", on_click=lambda _event: run_action(select_next_counterparty_batch), disabled=True)
     clear_selection_button = ft.OutlinedButton("Clear Selection", on_click=lambda _event: run_action(clear_counterparty_selection), disabled=True)
     regenerate_selected_button = ft.FilledButton("Regenerate Docs for Selection", on_click=lambda _event: run_action(regenerate_selected_documents), disabled=True)
     queue_selected_button = ft.FilledButton("Send Mail for Selection", on_click=lambda _event: run_action(send_selected_mail), disabled=True)
     load_generated_docs_button = ft.OutlinedButton("Load Generated Docs", on_click=lambda _event: run_action(load_generated_documents_for_selected_row), disabled=True)
     preview_generated_doc_button = ft.OutlinedButton("Preview Selected Generated Doc", on_click=lambda _event: run_action(preview_selected_generated_document), disabled=True)
-    generated_doc_dropdown.on_change = lambda _event: update_workflow_button_state()
+    generated_doc_dropdown.on_change = on_generated_doc_dropdown_changed
     render_selected_document_paths()
 
     if page is not None and excel_picker is not None:
@@ -1597,53 +1732,97 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
             scroll=ft.ScrollMode.AUTO,
         ),
     )
+    generated_docs_rows_panel.controls = [
+        ft.Text("Review row status and hover or click the Generated Docs column to preview outputs inline."),
+        compliance_row_details,
+    ]
+    generated_doc_preview_dismiss = ft.Container(
+        left=0,
+        top=0,
+        right=0,
+        bottom=0,
+        bgcolor="#01000000",
+        visible=False,
+        on_click=lambda _event: (hide_generated_doc_bubble(), safe_update()),
+    )
+    generated_doc_preview_bubble = ft.Container(
+        width=620,
+        padding=16,
+        border_radius=18,
+        bgcolor=ft.Colors.WHITE,
+        opacity=0.94,
+        border=_border_all(ft, 1, ft.Colors.BLUE_GREY_200),
+        shadow=ft.BoxShadow(blur_radius=22, color=ft.Colors.BLUE_GREY_100),
+        right=16,
+        top=52,
+        visible=False,
+        content=ft.Column(
+            [
+                ft.Row(
+                    [
+                        generated_doc_preview_title,
+                        ft.IconButton(ft.Icons.CLOSE, tooltip="Close preview", on_click=lambda _event: (hide_generated_doc_bubble(), safe_update())),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                ),
+                generated_doc_hint,
+                generated_doc_dropdown,
+                ft.Row([load_generated_docs_button, preview_generated_doc_button], wrap=True),
+                generated_doc_preview,
+            ],
+            spacing=8,
+        ),
+    )
+    generated_docs_rows_stack.controls = [
+        generated_docs_rows_panel,
+        generated_doc_preview_dismiss,
+        generated_doc_preview_bubble,
+    ]
+    compliance_detail_container = ft.Column(
+        [
+            compliance_detail_header,
+            compliance_detail,
+            compliance_actions_allowed,
+            _section(
+                ft,
+                "Row Workflow Actions",
+                ft.Column(
+                    [
+                        ft.Text("Select individual rows, the current page, all rows, or the next batch before retriggering workflow components."),
+                        workflow_action_hint,
+                        ft.Row(
+                            [
+                                workflow_batch_size,
+                                select_current_page_button,
+                                select_all_button,
+                                select_batch_button,
+                                clear_selection_button,
+                            ],
+                            wrap=True,
+                        ),
+                        ft.Row(
+                            [
+                                regenerate_selected_button,
+                                queue_selected_button,
+                            ],
+                            wrap=True,
+                        ),
+                    ]
+                ),
+            ),
+            _section(ft, "Excel Row Workflow Status", generated_docs_rows_stack),
+        ],
+        visible=False,
+    )
     compliance_page = _section(
         ft,
         "Compliance",
         ft.Column(
             [
-                ft.Text("High-level current-quarter compliance by client."),
+                compliance_intro,
                 compliance_clients,
-                _section(ft, "Selected Client Compliance", compliance_detail),
-                _section(
-                    ft,
-                    "Row Workflow Actions",
-                    ft.Column(
-                        [
-                            ft.Text("Select individual rows, all rows, or the next batch before retriggering workflow components."),
-                            workflow_action_hint,
-                            ft.Row(
-                                [
-                                    workflow_batch_size,
-                                    select_all_button,
-                                    select_batch_button,
-                                    clear_selection_button,
-                                ],
-                                wrap=True,
-                            ),
-                            ft.Row(
-                                [
-                                    regenerate_selected_button,
-                                    queue_selected_button,
-                                ],
-                                wrap=True,
-                            ),
-                        ]
-                    ),
-                ),
-                _section(
-                    ft,
-                    "Generated Document Preview",
-                    ft.Column(
-                        [
-                            generated_doc_hint,
-                            generated_doc_dropdown,
-                            ft.Row([load_generated_docs_button, preview_generated_doc_button], wrap=True),
-                            generated_doc_preview,
-                        ]
-                    ),
-                ),
-                _section(ft, "Excel Row Workflow Status", compliance_row_details),
+                compliance_empty_detail,
+                compliance_detail_container,
             ],
             scroll=ft.ScrollMode.AUTO,
         ),
@@ -1711,6 +1890,29 @@ def normalized_mail_provider_value(raw_provider: object | None = None) -> str:
     if "webtel" in raw:
         return "webtel_smtp"
     return "gmail_smtp"
+
+
+def _smtp_password_key(provider: str, sender_email: str) -> str:
+    sender = (sender_email or "default").strip().lower()
+    safe_sender = "".join(char if char.isalnum() or char in {"@", ".", "_", "-"} else "_" for char in sender)
+    return f"mail.smtp_password.{normalized_mail_provider_value(provider)}.{safe_sender}"
+
+
+def _save_smtp_password(settings: SettingsService, provider: str, sender_email: str, password: str) -> None:
+    settings.set_value(_smtp_password_key(provider, sender_email), password, secret=True)
+    # Keep the legacy key populated so older app versions and existing installs continue to work.
+    settings.set_value("mail.smtp_password", password, secret=True)
+
+
+def _load_smtp_password(settings: SettingsService, provider: str, sender_email: str, default: str = "") -> str:
+    scoped = settings.get_value(_smtp_password_key(provider, sender_email), "")
+    if scoped:
+        return scoped
+    legacy = settings.get_value("mail.smtp_password", "")
+    if legacy and sender_email:
+        settings.set_value(_smtp_password_key(provider, sender_email), legacy, secret=True)
+        return legacy
+    return default
 
 
 def _latest_quarter(quarters: list[ClientQuarter]) -> ClientQuarter | None:
@@ -1831,12 +2033,22 @@ def _client_summary_line(card: dict) -> str:
     if summary is None:
         return f"{card['quarter_label']}: no imported counterparties yet."
     return (
-        f"{card['quarter_label']}: {summary.fully_compliant}/{summary.total} fully compliant, "
-        f"{summary.partially_compliant} partial, {summary.non_compliant} non."
+        f"{card['quarter_label']}: {_client_compliance_status(summary)} client; "
+        f"{summary.fully_compliant}/{summary.total} counterparties compliant, {summary.non_compliant} non-compliant."
     )
 
 
-def _counterparty_detail_controls(ft, rows: list[dict], selected_ids: set[int], on_toggle) -> list:
+def _client_compliance_status(summary) -> str:
+    if summary.total == 0:
+        return "non-compliant"
+    if summary.fully_compliant == summary.total:
+        return "compliant"
+    if summary.fully_compliant > 0:
+        return "partially compliant"
+    return "non-compliant"
+
+
+def _counterparty_detail_controls(ft, rows: list[dict], selected_ids: set[int], on_toggle, on_doc_preview) -> list:
     if not rows:
         return [ft.Text("No Excel rows have been imported for this quarter yet.", selectable=True)]
     table = ft.DataTable(
@@ -1846,7 +2058,7 @@ def _counterparty_detail_controls(ft, rows: list[dict], selected_ids: set[int], 
             ft.DataColumn(ft.Text("Email")),
             ft.DataColumn(ft.Text("Balance")),
             ft.DataColumn(ft.Text("Compliance")),
-            ft.DataColumn(ft.Text("Docs")),
+            ft.DataColumn(ft.Text("Generated Docs")),
             ft.DataColumn(ft.Text("Mail Sent")),
         ],
         rows=[
@@ -1871,7 +2083,7 @@ def _counterparty_detail_controls(ft, rows: list[dict], selected_ids: set[int], 
                     ft.DataCell(ft.Text(row["email"], selectable=True)),
                     ft.DataCell(ft.Text(row["balance"], selectable=True)),
                     ft.DataCell(ft.Text(row["compliance_status"], selectable=True)),
-                    ft.DataCell(ft.Text(row["document_status"], selectable=True)),
+                    ft.DataCell(_generated_document_cell(ft, row, on_doc_preview)),
                     ft.DataCell(ft.Text(row["mail_sent"], selectable=True)),
                 ]
             )
@@ -1881,6 +2093,44 @@ def _counterparty_detail_controls(ft, rows: list[dict], selected_ids: set[int], 
     return [
         ft.Row([table], scroll=ft.ScrollMode.AUTO),
     ]
+
+
+def _generated_document_cell(ft, row: dict, on_doc_preview):
+    documents = row.get("documents", [])
+    if not documents:
+        return ft.Text(row["document_status"], selectable=True)
+
+    first_document = documents[0]
+    return ft.Container(
+        content=ft.Text(row["document_status"], selectable=True),
+        padding=8,
+        border_radius=12,
+        bgcolor=ft.Colors.BLUE_GREY_50,
+        tooltip="Hover or click to preview generated documents",
+        data=(row["counterparty_id"], first_document["id"]),
+        on_hover=lambda event: _preview_document_on_hover(event, on_doc_preview),
+        on_click=lambda event: on_doc_preview(int(event.control.data[0]), int(event.control.data[1])),
+    )
+
+
+def _preview_document_on_hover(event, on_doc_preview) -> None:
+    if str(getattr(event, "data", "")).lower() != "true":
+        return
+    on_doc_preview(int(event.control.data[0]), int(event.control.data[1]))
+
+
+def _short_document_label(document: dict) -> str:
+    name = str(document.get("file_name") or Path(str(document.get("file_path", ""))).name or "document")
+    return name if len(name) <= 28 else f"{name[:25]}..."
+
+
+def _preview_bubble_width(page) -> int:
+    raw_width = getattr(page, "window_width", None) or getattr(page, "width", None) or 1280
+    try:
+        available_width = int(raw_width) - 260
+    except (TypeError, ValueError):
+        available_width = 1020
+    return max(420, min(720, available_width - 80))
 
 
 def _list_texts(ft, values: list[str], empty_text: str) -> list:
@@ -1900,6 +2150,17 @@ def _document_status(jobs: list[DocumentJob], documents: list[GeneratedDocument]
     if jobs:
         return _count_summary({status: sum(1 for job in jobs if job.status == status) for status in {job.status for job in jobs}})
     return "not generated"
+
+
+def _generated_document_summary(document: GeneratedDocument) -> dict:
+    path = Path(document.file_path)
+    return {
+        "id": document.id,
+        "file_path": document.file_path,
+        "file_name": path.name,
+        "file_type": document.file_type,
+        "created_at": document.created_at,
+    }
 
 
 def _mapping_errors_for_variables(variables: list[str], mappings: dict[str, object], available_columns: set[str]) -> list[str]:
