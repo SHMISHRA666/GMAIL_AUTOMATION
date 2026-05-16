@@ -388,6 +388,34 @@ class ComplianceService:
     def __init__(self, session: Session) -> None:
         self.session = session
 
+    def reset_quarter_status(self, client_quarter_id: int, reset_documents: bool = False, reset_mail: bool = False) -> int:
+        counterparties = list(self.session.exec(select(Counterparty).where(Counterparty.client_quarter_id == client_quarter_id)))
+        counterparty_ids = [counterparty.id for counterparty in counterparties if counterparty.id is not None]
+        if not counterparty_ids:
+            return 0
+
+        if reset_documents:
+            document_job_ids = [
+                job.id
+                for job in self.session.exec(select(DocumentJob).where(DocumentJob.client_quarter_id == client_quarter_id))
+                if job.id is not None
+            ]
+            if document_job_ids:
+                self.session.exec(delete(GeneratedDocument).where(GeneratedDocument.document_job_id.in_(document_job_ids)))
+            self.session.exec(delete(GeneratedDocument).where(GeneratedDocument.counterparty_id.in_(counterparty_ids)))
+            self.session.exec(delete(DocumentJob).where(DocumentJob.client_quarter_id == client_quarter_id))
+
+        if reset_documents or reset_mail:
+            self.session.exec(delete(EmailMessage).where(EmailMessage.client_quarter_id == client_quarter_id))
+            self.session.exec(delete(EmailBatch).where(EmailBatch.client_quarter_id == client_quarter_id))
+
+        for counterparty in counterparties:
+            counterparty.status = "non_compliant"
+            counterparty.updated_at = utc_now_text()
+            self.session.add(counterparty)
+        self.session.commit()
+        return len(counterparties)
+
     def reconcile_all(self) -> int:
         changed = 0
         quarter_ids = [
@@ -407,10 +435,24 @@ class ComplianceService:
         if not counterparty_ids:
             return 0
 
-        generated_ids = {
-            document.counterparty_id
-            for document in self.session.exec(select(GeneratedDocument).where(GeneratedDocument.counterparty_id.in_(counterparty_ids)))
-        }
+        quarter_job_ids = [
+            job.id
+            for job in self.session.exec(
+                select(DocumentJob).where(
+                    DocumentJob.client_quarter_id == client_quarter_id,
+                    DocumentJob.counterparty_id.in_(counterparty_ids),
+                )
+            )
+            if job.id is not None
+        ]
+        generated_ids = set()
+        if quarter_job_ids:
+            generated_ids = {
+                counterparty_id
+                for counterparty_id in self.session.exec(
+                    select(GeneratedDocument.counterparty_id).where(GeneratedDocument.document_job_id.in_(quarter_job_ids))
+                )
+            }
         sent_ids = {
             message.counterparty_id
             for message in self.session.exec(
@@ -492,33 +534,38 @@ class WorkflowService:
         ]
         run = self.workflow.create_run(client_quarter_id, "document_regeneration", total_count=len(counterparties) * len(document_templates))
         jobs: list[DocumentJob] = []
+        selected_counterparty_ids = [counterparty.id for counterparty in counterparties if counterparty.id is not None]
+        if selected_counterparty_ids:
+            old_job_ids = [
+                job.id
+                for job in self.session.exec(
+                    select(DocumentJob).where(
+                        DocumentJob.client_quarter_id == client_quarter_id,
+                        DocumentJob.counterparty_id.in_(selected_counterparty_ids),
+                    )
+                )
+                if job.id is not None
+            ]
+            if old_job_ids:
+                self.session.exec(delete(GeneratedDocument).where(GeneratedDocument.document_job_id.in_(old_job_ids)))
+            self.session.exec(delete(GeneratedDocument).where(GeneratedDocument.counterparty_id.in_(selected_counterparty_ids)))
+            self.session.exec(
+                delete(DocumentJob).where(
+                    DocumentJob.client_quarter_id == client_quarter_id,
+                    DocumentJob.counterparty_id.in_(selected_counterparty_ids),
+                )
+            )
+            self.session.commit()
         for counterparty in counterparties:
             assert counterparty.id is not None
             for template in document_templates:
                 assert template.id is not None
-                job = self.session.exec(
-                    select(DocumentJob).where(
-                        DocumentJob.client_quarter_id == client_quarter_id,
-                        DocumentJob.counterparty_id == counterparty.id,
-                        DocumentJob.template_id == template.id,
-                    )
-                ).first()
-                if job is None:
-                    job = DocumentJob(
-                        workflow_run_id=run.id,
-                        client_quarter_id=client_quarter_id,
-                        counterparty_id=counterparty.id,
-                        template_id=template.id,
-                    )
-                else:
-                    job.workflow_run_id = run.id
-                    job.status = "pending"
-                    job.attempts = 0
-                    job.next_retry_at = ""
-                    job.retry_locked = False
-                    job.error = ""
-                    job.updated_at = utc_now_text()
-                    self.session.exec(delete(GeneratedDocument).where(GeneratedDocument.document_job_id == job.id))
+                job = DocumentJob(
+                    workflow_run_id=run.id,
+                    client_quarter_id=client_quarter_id,
+                    counterparty_id=counterparty.id,
+                    template_id=template.id,
+                )
                 self.session.add(job)
                 jobs.append(job)
         self.session.commit()
@@ -621,12 +668,20 @@ class WorkflowService:
         if counterparty is None:
             raise ValidationError(f"Counterparty not found: {message.counterparty_id}")
         assert counterparty.id is not None
-        documents = list(
-            self.session.exec(
-                select(GeneratedDocument).where(
-                    GeneratedDocument.counterparty_id == counterparty.id,
+        quarter_job_ids = [
+            job.id
+            for job in self.session.exec(
+                select(DocumentJob).where(
+                    DocumentJob.client_quarter_id == message.client_quarter_id,
+                    DocumentJob.counterparty_id == counterparty.id,
                 )
             )
+            if job.id is not None
+        ]
+        documents = (
+            list(self.session.exec(select(GeneratedDocument).where(GeneratedDocument.document_job_id.in_(quarter_job_ids))))
+            if quarter_job_ids
+            else []
         )
         if not documents:
             raise ValidationError(f"No generated documents found for {counterparty.party_name}")

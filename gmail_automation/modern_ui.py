@@ -134,6 +134,30 @@ class ModernComplianceController:
             required = service.required_variables(client_quarter_id)
             return "Variables detected: " + (", ".join(sorted(required)) or "none")
 
+    def preview_mail_templates(self, client_quarter_id: int) -> dict[str, str]:
+        with Session(self.engine) as session:
+            if session.get(ClientQuarter, client_quarter_id) is None:
+                raise ValueError("Select a quarter before previewing mail templates.")
+            templates = list(
+                session.exec(
+                    select(Template).where(
+                        Template.client_quarter_id == client_quarter_id,
+                        Template.template_type.in_({"mail_subject", "mail_body"}),
+                        Template.is_active == True,  # noqa: E712
+                    ).order_by(Template.created_at.desc(), Template.id.desc())
+                )
+            )
+            latest_by_type: dict[str, Template] = {}
+            for template in templates:
+                if template.template_type not in latest_by_type:
+                    latest_by_type[template.template_type] = template
+            subject = latest_by_type.get("mail_subject")
+            body = latest_by_type.get("mail_body")
+            return {
+                "subject": subject.content_text if subject else "",
+                "body": body.content_text if body else "",
+            }
+
     def save_document_templates(self, client_quarter_id: int, template_paths: str) -> str:
         paths = _parse_template_paths(template_paths)
         if not paths:
@@ -163,6 +187,31 @@ class ModernComplianceController:
                     f"Variables detected: {variables}. Validation issues: {'; '.join(mapping_errors)}"
                 )
             return f"Saved {len(templates)} document template(s): {names}. Configured and validated. Variables detected: {variables}"
+
+    def add_document_templates(self, client_quarter_id: int, template_paths: str) -> str:
+        paths = _parse_template_paths(template_paths)
+        if not paths:
+            raise ValueError("Enter at least one document template path.")
+        with Session(self.engine) as session:
+            client_quarter = session.get(ClientQuarter, client_quarter_id)
+            if client_quarter is None:
+                raise ValueError("Select a quarter before adding document templates.")
+            service = TemplateService(session)
+            templates = [
+                service.save_file_template(
+                    client_quarter_id=client_quarter_id,
+                    template_type="document",
+                    name=path.stem,
+                    file_path=path,
+                    storage_dir=self.db_path.parent / "templates" / str(client_quarter_id) / "documents",
+                    client_id=client_quarter.client_id,
+                )
+                for path in paths
+            ]
+            names = ", ".join(template.name for template in templates)
+            required = service.required_variables(client_quarter_id)
+            variables = ", ".join(sorted(required)) or "none"
+            return f"Added {len(templates)} document template(s): {names}. Variables detected: {variables}"
 
     def list_document_templates(self, client_quarter_id: int) -> list[dict]:
         with Session(self.engine) as session:
@@ -210,6 +259,85 @@ class ModernComplianceController:
                 content = path.read_bytes().decode("latin-1", errors="ignore")
                 return content[:2000]
             return f"Preview is not supported for {suffix} files."
+
+    def update_document_template(self, template_id: int, template_path: str) -> str:
+        new_path = Path((template_path or "").strip().strip('"'))
+        if not new_path.exists():
+            raise ValueError("Choose an existing replacement document template file.")
+        with Session(self.engine) as session:
+            existing = session.get(Template, template_id)
+            if existing is None or existing.template_type != "document" or existing.client_quarter_id is None:
+                raise ValueError("Select a configured document template first.")
+            client_quarter = session.get(ClientQuarter, existing.client_quarter_id)
+            if client_quarter is None:
+                raise ValueError("Configured document is missing its client quarter.")
+            existing.is_active = False
+            session.add(existing)
+            session.commit()
+            service = TemplateService(session)
+            updated = service.save_file_template(
+                client_quarter_id=existing.client_quarter_id,
+                template_type="document",
+                name=new_path.stem,
+                file_path=new_path,
+                storage_dir=self.db_path.parent / "templates" / str(existing.client_quarter_id) / "documents",
+                client_id=client_quarter.client_id,
+            )
+            return f"Updated document template: {updated.name}."
+
+    def delete_document_template(self, template_id: int) -> str:
+        with Session(self.engine) as session:
+            template = session.get(Template, template_id)
+            if template is None or template.template_type != "document":
+                raise ValueError("Select a configured document template first.")
+            template.is_active = False
+            session.add(template)
+            session.commit()
+            return f"Deleted document template: {template.name}."
+
+    def reset_quarter_after_config_change(self, client_quarter_id: int, reset_documents: bool = False, reset_mail: bool = False) -> str:
+        with Session(self.engine) as session:
+            changed = ComplianceService(session).reset_quarter_status(
+                client_quarter_id,
+                reset_documents=reset_documents,
+                reset_mail=reset_mail,
+            )
+            auto_mapped = self._autofill_missing_template_mappings(session, client_quarter_id)
+            mapping_note = f" Auto-mapped {auto_mapped} missing variable(s)." if auto_mapped else ""
+            if reset_documents:
+                return (
+                    f"Reset {changed} counterparty row(s): compliance is non-compliant and generated docs/mail state was cleared."
+                    f"{mapping_note}"
+                )
+            if reset_mail:
+                return f"Reset {changed} counterparty row(s): compliance is non-compliant and mail state was cleared.{mapping_note}"
+            return "No reset requested."
+
+    def _autofill_missing_template_mappings(self, session: Session, client_quarter_id: int) -> int:
+        template_service = TemplateService(session)
+        imports = list(session.exec(select(ExcelImport).where(ExcelImport.client_quarter_id == client_quarter_id)))
+        columns = set(imports[-1].detected_columns if imports else [])
+        required_variables = template_service.required_variables(client_quarter_id)
+        existing_mappings = template_service.templates.mappings_for_quarter(client_quarter_id)
+        merged_mappings = {
+            variable: (mapping.source_type, mapping.source_key, mapping.constant_value)
+            for variable, mapping in existing_mappings.items()
+        }
+        added = 0
+        for variable in sorted(required_variables):
+            if variable in existing_mappings:
+                continue
+            candidate = _best_column_match(variable, columns)
+            if candidate:
+                merged_mappings[variable] = ("excel_column", candidate, "")
+                added += 1
+                continue
+            if variable.startswith("row."):
+                merged_mappings[variable] = ("counterparty_field", variable.split(".", 1)[1], "")
+                added += 1
+        if added:
+            template_service.save_mappings(client_quarter_id, merged_mappings)
+        return added
 
     def auto_map_variables(self, client_quarter_id: int) -> str:
         with Session(self.engine) as session:
@@ -344,9 +472,16 @@ class ModernComplianceController:
             jobs_by_counterparty: dict[int, list[DocumentJob]] = {}
             for job in session.exec(select(DocumentJob).where(DocumentJob.client_quarter_id == client_quarter_id)):
                 jobs_by_counterparty.setdefault(job.counterparty_id, []).append(job)
+            quarter_job_ids = {
+                job.id
+                for jobs in jobs_by_counterparty.values()
+                for job in jobs
+                if job.id is not None
+            }
             documents_by_counterparty: dict[int, list[GeneratedDocument]] = {}
-            for document in session.exec(select(GeneratedDocument)):
-                documents_by_counterparty.setdefault(document.counterparty_id, []).append(document)
+            if quarter_job_ids:
+                for document in session.exec(select(GeneratedDocument).where(GeneratedDocument.document_job_id.in_(quarter_job_ids))):
+                    documents_by_counterparty.setdefault(document.counterparty_id, []).append(document)
             emails_by_counterparty: dict[int, list[EmailMessage]] = {}
             for message in session.exec(select(EmailMessage).where(EmailMessage.client_quarter_id == client_quarter_id)):
                 emails_by_counterparty.setdefault(message.counterparty_id, []).append(message)
@@ -401,16 +536,26 @@ class ModernComplianceController:
             failed = len(results) - generated
             return f"Regenerated {generated} selected document job(s); {failed} need attention."
 
-    def queue_and_preview_send(self, client_quarter_id: int, subject: str, body: str) -> str:
+    def _saved_mail_templates_for_quarter(self, client_quarter_id: int) -> tuple[str, str]:
+        preview = self.preview_mail_templates(client_quarter_id)
+        subject = (preview.get("subject") or "").strip()
+        body = preview.get("body") or ""
+        if not subject or not body.strip():
+            raise ValueError("Save mail subject and body for this quarter before queueing or sending.")
+        return subject, body
+
+    def queue_and_preview_send(self, client_quarter_id: int) -> str:
+        subject, body = self._saved_mail_templates_for_quarter(client_quarter_id)
         with Session(self.engine) as session:
             workflow = WorkflowService(session, output_root=self.db_path.parent / "generated")
             messages = workflow.queue_email_messages(client_quarter_id, subject, body)
             sent = workflow.mark_preview_batch_sent(client_quarter_id)
             return f"Queued {len(messages)} email(s); marked {sent} sent in preview mode."
 
-    def queue_and_preview_send_selected(self, client_quarter_id: int, counterparty_ids: set[int], subject: str, body: str) -> str:
+    def queue_and_preview_send_selected(self, client_quarter_id: int, counterparty_ids: set[int]) -> str:
         if not counterparty_ids:
             raise ValueError("Select at least one Excel row before queueing mail.")
+        subject, body = self._saved_mail_templates_for_quarter(client_quarter_id)
         readiness = self.quarter_workflow_readiness(client_quarter_id)
         if readiness["mail_template_count"] < 2:
             raise ValueError("Save mail templates before queueing mail.")
@@ -426,9 +571,10 @@ class ModernComplianceController:
             sent = workflow.mark_preview_batch_sent(client_quarter_id, counterparty_ids=counterparty_ids)
             return f"Queued {len(messages)} selected email(s); marked {sent} sent in preview mode."
 
-    def send_mail_selected(self, client_quarter_id: int, counterparty_ids: set[int], subject: str, body: str) -> str:
+    def send_mail_selected(self, client_quarter_id: int, counterparty_ids: set[int]) -> str:
         if not counterparty_ids:
             raise ValueError("Select at least one Excel row before sending mail.")
+        subject, body = self._saved_mail_templates_for_quarter(client_quarter_id)
         readiness = self.quarter_workflow_readiness(client_quarter_id)
         if readiness["mail_template_count"] < 2:
             raise ValueError("Save mail templates before sending mail.")
@@ -579,10 +725,16 @@ class ModernComplianceController:
             counterparty = session.get(Counterparty, counterparty_id)
             if counterparty is None or counterparty.client_quarter_id != client_quarter_id:
                 raise ValueError("Selected row does not belong to the active quarter.")
-            documents = list(
+            jobs = list(
+                session.exec(select(DocumentJob).where(DocumentJob.client_quarter_id == client_quarter_id, DocumentJob.counterparty_id == counterparty_id))
+            )
+            job_ids = [job.id for job in jobs if job.id is not None]
+            if not job_ids:
+                return []
+            generated_documents = list(
                 session.exec(
                     select(GeneratedDocument)
-                    .where(GeneratedDocument.counterparty_id == counterparty_id)
+                    .where(GeneratedDocument.document_job_id.in_(job_ids))
                     .order_by(GeneratedDocument.created_at)
                 )
             )
@@ -593,7 +745,7 @@ class ModernComplianceController:
                     "file_type": document.file_type,
                     "created_at": document.created_at,
                 }
-                for document in documents
+                for document in generated_documents
                 if document.id is not None
             ]
 
@@ -651,6 +803,7 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
     client_type = ft.Dropdown(label="Client type", value="listed_org", options=[ft.dropdown.Option("listed_org", "Listed organization")])
     financial_year = ft.TextField(label="Financial year", value="2026-27", width=160)
     quarter = ft.Dropdown(label="Quarter", value="Q1", width=120, options=[ft.dropdown.Option(value) for value in ("Q1", "Q2", "Q3", "Q4")])
+    configure_client = ft.Dropdown(label="Client", expand=True)
     configure_quarter = ft.Dropdown(label="Client quarter", expand=True)
     clients_list = ft.Column(spacing=4)
     compliance_clients = ft.Column(spacing=8)
@@ -705,6 +858,9 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
     configured_document_template = ft.Dropdown(label="Configured document template", expand=True)
     document_validation_status = ft.Text("No document templates configured yet.", selectable=True)
     document_preview = ft.TextField(label="Template preview", multiline=True, min_lines=8, read_only=True)
+    configured_documents_list = ft.Column(spacing=8)
+    selected_document_preview_title = ft.Text("Configured document", size=18, weight=ft.FontWeight.BOLD, selectable=True)
+    selected_document_update_path = ft.TextField(label="Replacement document template path", expand=True)
     mail_subject = ft.TextField(label="Mail subject Liquid template", value="Balance confirmation for {{ party_name }}", expand=True)
     mail_body = ft.TextField(
         label="Mail body Liquid template",
@@ -712,6 +868,8 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
         min_lines=6,
         value="Dear {{ party_name }},\n\nPlease confirm the balance of {{ balance }} for {{ quarter.name }}.\n\nRegards",
     )
+    mail_preview_subject = ft.TextField(label="Mail subject", expand=True)
+    mail_preview_body = ft.TextField(label="Mail body", multiline=True, min_lines=8)
     mail_provider = ft.Dropdown(
         label="Mail provider",
         value="gmail_smtp",
@@ -800,6 +958,74 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
             show_feedback(f"Error: {exc}", is_error=True)
             safe_update()
 
+    def prompt_counterparty_reset(action, reset_documents: bool = False, reset_mail: bool = False) -> None:
+        def run_with_reset(reset: bool) -> str:
+            message = str(action())
+            if reset:
+                reset_message = controller.reset_quarter_after_config_change(
+                    configured_quarter_id(),
+                    reset_documents=reset_documents,
+                    reset_mail=reset_mail,
+                )
+                return f"{message} {reset_message}"
+            return message
+
+        if page is None:
+            run_action(lambda: run_with_reset(False))
+            return
+
+        reset_scope = "generated docs, mail state, and compliance status" if reset_documents else "mail state and compliance status"
+
+        def close_dialog() -> None:
+            try:
+                page.pop_dialog()
+            except Exception:
+                try:
+                    dialog.open = False
+                    dialog.update()
+                except Exception:
+                    pass
+            try:
+                page.update()
+            except Exception:
+                pass
+
+        def choose(reset: bool) -> None:
+            close_dialog()
+            run_action(lambda: run_with_reset(reset))
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Reset counterparty status?"),
+            content=ft.Text(
+                f"This configuration change may affect existing counterparties. Reset {reset_scope} for this quarter?"
+            ),
+            actions=[
+                ft.TextButton("No, retain status", on_click=lambda _event: choose(False)),
+                ft.FilledButton("Yes, reset status", on_click=lambda _event: choose(True)),
+            ],
+        )
+        try:
+            page.show_dialog(dialog)
+        except RuntimeError as exc:
+            if "already opened" in str(exc).lower():
+                return
+            try:
+                page.dialog = dialog
+                dialog.open = True
+                page.update()
+            except Exception:
+                show_feedback(str(exc), is_error=True)
+                safe_update()
+        except Exception as exc:
+            try:
+                page.dialog = dialog
+                dialog.open = True
+                page.update()
+            except Exception:
+                show_feedback(f"Could not open confirmation dialog: {exc}", is_error=True)
+                safe_update()
+
     def run_mail_action(action):
         try:
             message = str(action())
@@ -852,6 +1078,7 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
             configured_document_template.value = None
             document_validation_status.value = "Create/select a quarter first."
             document_preview.value = ""
+            configured_documents_list.controls = [ft.Text("Create/select a quarter first.", selectable=True)]
             return
         rows = controller.list_document_templates(int(configure_quarter.value))
         configured_document_template.options = [
@@ -870,10 +1097,17 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
             document_validation_status.value = "Validation issues: " + "; ".join(errors)
         else:
             document_validation_status.value = "No document templates configured yet."
+        configured_documents_list.controls = _configured_document_rows(ft, rows, open_document_preview, request_delete_document)
 
     def save_document_template_files() -> str:
         sync_document_paths_from_field()
         message = controller.save_document_templates(configured_quarter_id(), "\n".join(selected_document_paths))
+        refresh_document_templates()
+        return message
+
+    def add_document_template_files() -> str:
+        sync_document_paths_from_field()
+        message = controller.add_document_templates(configured_quarter_id(), "\n".join(selected_document_paths))
         refresh_document_templates()
         return message
 
@@ -886,6 +1120,86 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
             raise ValueError("Select a configured document template first.")
         document_preview.value = controller.preview_document_template(int(configured_document_template.value))
         return "Loaded template preview."
+
+    def open_document_preview(template_id: int, label: str) -> str:
+        configured_document_template.value = str(template_id)
+        selected_document_preview_title.value = label
+        selected_document_update_path.value = ""
+        document_preview.value = controller.preview_document_template(template_id)
+        show_page("Document Preview")
+        return "Opened configured document."
+
+    def open_document_setup() -> str:
+        show_page("Document Setup")
+        return "Opened document setup."
+
+    def open_mail_input_setup() -> str:
+        quarter_id = configured_quarter_id()
+        preview = controller.preview_mail_templates(quarter_id)
+        mail_subject.value = preview["subject"] or ""
+        mail_body.value = preview["body"] or ""
+        show_page("Mail Input Setup")
+        return "Opened mail input setup."
+
+    def open_mail_preview() -> str:
+        preview = controller.preview_mail_templates(configured_quarter_id())
+        mail_preview_subject.value = preview["subject"] or "(No saved mail subject yet.)"
+        mail_preview_body.value = preview["body"] or "No saved mail body yet."
+        show_page("Mail Preview")
+        return "Opened configured mail preview."
+
+    def request_delete_document(template_id: int) -> None:
+        try:
+            configured_document_template.value = str(template_id)
+            prompt_counterparty_reset(delete_selected_document_template, reset_documents=True)
+        except Exception as exc:
+            show_feedback(f"Error: {exc}", is_error=True)
+            safe_update()
+
+    def edit_configured_mail() -> str:
+        mail_subject.value = "" if mail_preview_subject.value == "(No saved mail subject yet.)" else (mail_preview_subject.value or "")
+        mail_body.value = "" if mail_preview_body.value == "No saved mail body yet." else (mail_preview_body.value or "")
+        show_page("Mail Input Setup")
+        return "Opened mail editor."
+
+    def update_configured_mail() -> str:
+        mail_subject.value = "" if mail_preview_subject.value == "(No saved mail subject yet.)" else (mail_preview_subject.value or "")
+        mail_body.value = "" if mail_preview_body.value == "No saved mail body yet." else (mail_preview_body.value or "")
+        return save_mail_template()
+
+    def update_selected_document_template() -> str:
+        if not configured_document_template.value:
+            raise ValueError("Select a configured document first.")
+        message = controller.update_document_template(int(configured_document_template.value), selected_document_update_path.value)
+        refresh_document_templates()
+        if configured_document_template.value:
+            selected_label = next(
+                (
+                    getattr(option, "text", None) or str(getattr(option, "key", "Configured document"))
+                    for option in configured_document_template.options
+                    if str(getattr(option, "key", "")) == str(configured_document_template.value)
+                ),
+                "Configured document",
+            )
+            selected_document_preview_title.value = selected_label
+            document_preview.value = controller.preview_document_template(int(configured_document_template.value))
+        selected_document_update_path.value = ""
+        return message
+
+    def delete_selected_document_template() -> str:
+        if not configured_document_template.value:
+            raise ValueError("Select a configured document first.")
+        message = controller.delete_document_template(int(configured_document_template.value))
+        configured_document_template.value = None
+        document_preview.value = ""
+        selected_document_preview_title.value = "Configured document"
+        selected_document_update_path.value = ""
+        refresh_document_templates()
+        return message
+
+    def back_to_configure() -> str:
+        show_page("Configure")
+        return "Returned to Configure."
 
     def show_page(name: str, keep_compliance_detail: bool = False) -> None:
         active_page["name"] = name
@@ -1157,13 +1471,19 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
         return message
 
     def send_selected_mail() -> str:
-        message = controller.send_mail_selected(selected_quarter_id(), selected_workflow_ids(), mail_subject.value, mail_body.value)
+        message = controller.send_mail_selected(selected_quarter_id(), selected_workflow_ids())
         refresh_compliance_rows()
         return message
 
     def open_client_compliance(client_id: int) -> str:
         quarter_id = controller.current_quarter_id_for_client(client_id)
+        # Keep global quarter picker + Configure client's quarter picker aligned with the org we opened.
+        # Otherwise _refresh_impl can rewrite selected_quarter to a different client's "current quarter"
+        # when configure_client_id still pointed at whoever was last edited in Configure — leaving
+        # Compliance rows vs readiness vs selection out of sync and workflow buttons permanently disabled.
+        configure_client_id["value"] = client_id
         selected_quarter.value = str(quarter_id)
+        configure_quarter.value = str(quarter_id)
         compliance_detail_visible["value"] = True
         hide_generated_doc_bubble()
         show_page("Compliance", keep_compliance_detail=True)
@@ -1202,6 +1522,11 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
             ft.dropdown.Option(str(item.id), _quarter_label(item, client_lookup))
             for item in quarters
             if item.id is not None
+        ]
+        configure_client.options = [
+            ft.dropdown.Option(str(client.id), client.name)
+            for client in clients
+            if client.id is not None
         ]
         current = snapshot["current_quarter"]
         if not selected_quarter.value and current and current.id is not None:
@@ -1273,6 +1598,22 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
                 selected_quarter_obj = next((item for item in quarters if item.id == selected_quarter_id_value), None)
                 if selected_quarter_obj is not None:
                     configure_client_id["value"] = selected_quarter_obj.client_id
+        if configure_client_id["value"] is not None and not any(client.id == configure_client_id["value"] for client in clients):
+            configure_client_id["value"] = None
+        configure_client.value = str(configure_client_id["value"]) if configure_client_id["value"] is not None else None
+
+        # Keep Configure client in sync with the header quarter only while actively viewing
+        # Compliance detail. Doing this globally can override a newly created client with no
+        # quarter yet (for example, "acme"), making it appear unconfigurable.
+        if active_page["name"] == "Compliance" and compliance_detail_visible["value"] and selected_quarter.value and configure_client_id["value"] is not None:
+            try:
+                header_qid = int(selected_quarter.value)
+            except ValueError:
+                header_qid = None
+            if header_qid is not None:
+                header_quarter = next((item for item in quarters if item.id == header_qid), None)
+                if header_quarter is not None and header_quarter.client_id != configure_client_id["value"]:
+                    configure_client_id["value"] = header_quarter.client_id
 
         client_quarters = [item for item in quarters if item.client_id == configure_client_id["value"]]
         configure_quarter.options = [
@@ -1354,8 +1695,20 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
             selected_quarter.value = configure_quarter.value
         refresh()
 
+    def on_configure_client_changed(_event) -> None:
+        if ui_guard["busy"]:
+            return
+        if configure_client.value:
+            configure_client_id["value"] = int(configure_client.value)
+            configure_quarter.value = None
+        else:
+            configure_client_id["value"] = None
+            configure_quarter.value = None
+        refresh()
+
     selected_quarter.on_change = on_selected_quarter_changed
     configure_quarter.on_change = on_configure_quarter_changed
+    configure_client.on_change = on_configure_client_changed
 
     def on_mail_provider_changed(event) -> None:
         raw_provider = getattr(event, "data", None) or getattr(getattr(event, "control", None), "value", None) or mail_provider.value
@@ -1395,6 +1748,19 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
         render_selected_document_paths()
         page.update()
 
+    async def pick_replacement_document_template() -> None:
+        if excel_picker is None or page is None:
+            return
+        files = await excel_picker.pick_files(
+            dialog_title="Select replacement document template",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["docx", "txt", "html", "htm", "md", "pdf"],
+            allow_multiple=False,
+        )
+        if files and files[0].path:
+            selected_document_update_path.value = files[0].path
+            page.update()
+
     async def pick_mail_body_template() -> None:
         if excel_picker is None or page is None:
             return
@@ -1432,7 +1798,17 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
         return controller.create_quarter(configured_client_id(), financial_year.value, quarter.value, current=True)
 
     def save_mail_template() -> str:
-        return controller.save_mail_templates(configured_quarter_id(), mail_subject.value, mail_body.value)
+        quarter_id = configured_quarter_id()
+        subject_to_save = mail_subject.value or ""
+        body_to_save = mail_body.value or ""
+        message = controller.save_mail_templates(quarter_id, subject_to_save, body_to_save)
+        # Re-read persisted values so UI reflects DB state even after refreshes/dialog flows.
+        preview = controller.preview_mail_templates(quarter_id)
+        mail_subject.value = preview["subject"] or ""
+        mail_body.value = preview["body"] or ""
+        mail_preview_subject.value = preview["subject"] or "(No saved mail subject yet.)"
+        mail_preview_body.value = preview["body"] or "No saved mail body yet."
+        return message
 
     def save_mail_settings_action() -> str:
         provider = normalized_mail_provider()
@@ -1625,20 +2001,73 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
         document_template_row = ft.Row(
             [
                 ft.OutlinedButton("Browse Docs…", on_click=lambda _event: page.run_task(pick_document_templates)),
-                ft.FilledButton("Save Document Templates", on_click=lambda _event: run_action(save_document_template_files)),
-            ]
+                ft.FilledButton(
+                    "Configure Docs (Replace)",
+                    on_click=lambda _event: prompt_counterparty_reset(save_document_template_files, reset_documents=True),
+                ),
+                ft.OutlinedButton(
+                    "Add New Doc",
+                    on_click=lambda _event: prompt_counterparty_reset(add_document_template_files, reset_documents=True),
+                ),
+            ],
+            wrap=True,
+        )
+        document_update_row = ft.Row(
+            [
+                ft.OutlinedButton("Browse Replacement…", on_click=lambda _event: page.run_task(pick_replacement_document_template)),
+                ft.FilledButton(
+                    "Update Document",
+                    on_click=lambda _event: prompt_counterparty_reset(update_selected_document_template, reset_documents=True),
+                ),
+                ft.OutlinedButton(
+                    "Delete Document",
+                    on_click=lambda _event: prompt_counterparty_reset(delete_selected_document_template, reset_documents=True),
+                ),
+            ],
+            wrap=True,
         )
         mail_template_row = ft.Row(
             [
                 ft.OutlinedButton("Load Mail Body…", on_click=lambda _event: page.run_task(pick_mail_body_template)),
-                ft.FilledButton("Save Mail Template", on_click=lambda _event: run_action(save_mail_template)),
+                ft.FilledButton(
+                    "Update Mail Template",
+                    on_click=lambda _event: prompt_counterparty_reset(save_mail_template, reset_mail=True),
+                ),
             ]
         )
     else:
         document_template_row = ft.Row(
-            [ft.FilledButton("Save Document Templates", on_click=lambda _event: run_action(save_document_template_files))]
+            [
+                ft.FilledButton(
+                    "Configure Docs (Replace)",
+                    on_click=lambda _event: prompt_counterparty_reset(save_document_template_files, reset_documents=True),
+                ),
+                ft.OutlinedButton(
+                    "Add New Doc",
+                    on_click=lambda _event: prompt_counterparty_reset(add_document_template_files, reset_documents=True),
+                ),
+            ]
         )
-        mail_template_row = ft.Row([ft.FilledButton("Save Mail Template", on_click=lambda _event: run_action(save_mail_template))])
+        document_update_row = ft.Row(
+            [
+                ft.FilledButton(
+                    "Update Document",
+                    on_click=lambda _event: prompt_counterparty_reset(update_selected_document_template, reset_documents=True),
+                ),
+                ft.OutlinedButton(
+                    "Delete Document",
+                    on_click=lambda _event: prompt_counterparty_reset(delete_selected_document_template, reset_documents=True),
+                ),
+            ]
+        )
+        mail_template_row = ft.Row(
+            [
+                ft.FilledButton(
+                    "Update Mail Template",
+                    on_click=lambda _event: prompt_counterparty_reset(save_mail_template, reset_mail=True),
+                )
+            ]
+        )
 
     home_page = _section(
         ft,
@@ -1655,32 +2084,51 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
     configure_form = ft.Column(
         [
             settings_title,
-            ft.Text("Configuration is available after selecting or creating a client."),
-            ft.Row([configure_quarter, financial_year, quarter, ft.FilledButton("Create Quarter", on_click=lambda _event: run_action(create_configured_quarter))]),
-            ft.Text("Step 1: choose the master Excel, then persist it for this quarter. Legacy tracking columns update compliance status during import."),
-            workbook_path,
-            excel_import_row,
-            ft.Text("Step 2: configure mail template independently."),
-            mail_subject,
-            mail_body,
-            mail_template_row,
-            ft.Row([ft.OutlinedButton("Open Mail Setup Tab", on_click=lambda _event: run_action(open_mail_setup))]),
-            ft.Text("Step 3: upload document templates/static attachments. Use Liquid variables such as {{ party_name }} or {{ row.balance }}."),
-            document_template_paths,
-            document_paths_list,
-            document_template_row,
-            ft.Row(
-                [
-                    ft.OutlinedButton("Clear Docs", on_click=lambda _event: run_action(clear_document_paths)),
-                    ft.OutlinedButton("Refresh Docs", on_click=lambda _event: run_action(refresh_documents_for_ui)),
-                ]
+            ft.Text("Configuration is available after selecting or creating a client. Open each setup page to edit inputs; this page only lists what is configured."),
+            ft.Row([configure_client, configure_quarter, financial_year, quarter, ft.FilledButton("Create Quarter", on_click=lambda _event: run_action(create_configured_quarter))]),
+            _section(
+                ft,
+                "Counterparty Input",
+                ft.Column(
+                    [
+                        ft.Text("Choose the master Excel and persist counterparties for this quarter."),
+                        workbook_path,
+                        excel_import_row,
+                    ]
+                ),
             ),
-            configured_document_template,
-            ft.Row([ft.OutlinedButton("Preview Selected Doc", on_click=lambda _event: run_action(preview_selected_document_template))]),
-            document_preview,
-            document_validation_status,
-            ft.OutlinedButton("Auto Map + Validate", on_click=lambda _event: run_action(lambda: controller.auto_map_variables(configured_quarter_id()))),
-            inputs_status,
+            _section(
+                ft,
+                "Mail Input Configuration",
+                ft.Column(
+                    [
+                        ft.Text("Configure the saved mail subject and body for this quarter."),
+                        ft.Row(
+                            [
+                                ft.FilledButton("Configure Mail Input", on_click=lambda _event: run_action(open_mail_input_setup)),
+                                ft.OutlinedButton("View Configured Mail", on_click=lambda _event: run_action(open_mail_preview)),
+                                ft.OutlinedButton("SMTP Setup", on_click=lambda _event: run_action(open_mail_setup)),
+                            ]
+                        ),
+                    ]
+                ),
+            ),
+            _section(
+                ft,
+                "Document Configure Setup",
+                ft.Column(
+                    [
+                        ft.Text("Configured document templates for this quarter."),
+                        ft.Row(
+                            [
+                                ft.FilledButton("Configure Docs", on_click=lambda _event: run_action(open_document_setup)),
+                                ft.OutlinedButton("Refresh Docs", on_click=lambda _event: run_action(refresh_documents_for_ui)),
+                            ]
+                        ),
+                        configured_documents_list,
+                    ]
+                ),
+            ),
         ]
     )
 
@@ -1703,6 +2151,80 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
             [
                 configure_empty,
                 configure_form,
+            ],
+            scroll=ft.ScrollMode.AUTO,
+        ),
+    )
+    mail_input_page = _section(
+        ft,
+        "Mail Input Setup",
+        ft.Column(
+            [
+                ft.Row([ft.OutlinedButton("Back to Configure", on_click=lambda _event: run_action(back_to_configure))]),
+                ft.Text("Configure only the mail input template for this quarter."),
+                mail_subject,
+                mail_body,
+                mail_template_row,
+            ],
+            scroll=ft.ScrollMode.AUTO,
+        ),
+    )
+    mail_preview_page = _section(
+        ft,
+        "Configured Mail",
+        ft.Column(
+            [
+                ft.Row([ft.OutlinedButton("Back to Configure", on_click=lambda _event: run_action(back_to_configure))]),
+                mail_preview_subject,
+                mail_preview_body,
+                ft.Row(
+                    [
+                        ft.OutlinedButton("Edit on Mail Input Page", on_click=lambda _event: run_action(edit_configured_mail)),
+                        ft.FilledButton(
+                            "Update Mail",
+                            on_click=lambda _event: prompt_counterparty_reset(update_configured_mail, reset_mail=True),
+                        ),
+                    ]
+                ),
+            ],
+            scroll=ft.ScrollMode.AUTO,
+        ),
+    )
+    document_setup_page = _section(
+        ft,
+        "Document Setup",
+        ft.Column(
+            [
+                ft.Row([ft.OutlinedButton("Back to Configure", on_click=lambda _event: run_action(back_to_configure))]),
+                ft.Text("Manage document templates/static attachments only. Use Liquid variables such as {{ party_name }} or {{ row.balance }}."),
+                document_template_paths,
+                document_paths_list,
+                document_template_row,
+                ft.Row(
+                    [
+                        ft.OutlinedButton("Clear Docs", on_click=lambda _event: run_action(clear_document_paths)),
+                        ft.OutlinedButton("Refresh Docs", on_click=lambda _event: run_action(refresh_documents_for_ui)),
+                    ],
+                    wrap=True,
+                ),
+                document_validation_status,
+                ft.OutlinedButton("Auto Map + Validate", on_click=lambda _event: run_action(lambda: controller.auto_map_variables(configured_quarter_id()))),
+                inputs_status,
+            ],
+            scroll=ft.ScrollMode.AUTO,
+        ),
+    )
+    document_preview_page = _section(
+        ft,
+        "Configured Document",
+        ft.Column(
+            [
+                ft.Row([ft.OutlinedButton("Back to Configure", on_click=lambda _event: run_action(back_to_configure))]),
+                selected_document_preview_title,
+                document_preview,
+                ft.Text("To edit a configured document, choose a replacement file and update this document row."),
+                ft.Row([selected_document_update_path], scroll=ft.ScrollMode.AUTO),
+                document_update_row,
             ],
             scroll=ft.ScrollMode.AUTO,
         ),
@@ -1838,7 +2360,7 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
                 ft.Row(
                     [
                         ft.FilledButton("Generate Documents", on_click=lambda _event: run_action(lambda: controller.run_generation(selected_quarter_id()))),
-                        ft.FilledButton("Queue + Preview Send", on_click=lambda _event: run_action(lambda: controller.queue_and_preview_send(selected_quarter_id(), mail_subject.value, mail_body.value))),
+                        ft.FilledButton("Queue + Preview Send", on_click=lambda _event: run_action(lambda: controller.queue_and_preview_send(selected_quarter_id()))),
                     ]
                 ),
                 ft.Text("Preview send marks queued emails as sent without contacting the mail provider. Live sends use configured Gmail or Webtel SMTP settings."),
@@ -1846,18 +2368,46 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
         ),
     )
 
-    page_cards.extend([home_page, clients_page, configure_page, mail_setup_page, compliance_page, workflow_page])
-    for card, name in zip(page_cards, ("Home", "Clients", "Configure", "Mail Setup", "Compliance", "Workflow"), strict=True):
+    page_cards.extend([
+        home_page,
+        clients_page,
+        configure_page,
+        mail_input_page,
+        mail_preview_page,
+        document_setup_page,
+        document_preview_page,
+        mail_setup_page,
+        compliance_page,
+        workflow_page,
+    ])
+    navigable_pages = {"Home", "Clients", "Configure", "Mail Setup", "Compliance", "Workflow"}
+    for card, name in zip(
+        page_cards,
+        (
+            "Home",
+            "Clients",
+            "Configure",
+            "Mail Input Setup",
+            "Mail Preview",
+            "Document Setup",
+            "Document Preview",
+            "Mail Setup",
+            "Compliance",
+            "Workflow",
+        ),
+        strict=True,
+    ):
         card.data = name
         card.visible = name == active_page["name"]
-        nav_buttons.append(
-            ft.OutlinedButton(
-                name,
-                data=name,
-                disabled=name == active_page["name"],
-                on_click=lambda event: show_page(event.control.data),
+        if name in navigable_pages:
+            nav_buttons.append(
+                ft.OutlinedButton(
+                    name,
+                    data=name,
+                    disabled=name == active_page["name"],
+                    on_click=lambda event: show_page(event.control.data),
+                )
             )
-        )
 
     controls = [
         ft.Text("Mail Compliance Automation", size=28, weight=ft.FontWeight.BOLD),
@@ -2036,6 +2586,44 @@ def _client_summary_line(card: dict) -> str:
         f"{card['quarter_label']}: {_client_compliance_status(summary)} client; "
         f"{summary.fully_compliant}/{summary.total} counterparties compliant, {summary.non_compliant} non-compliant."
     )
+
+
+def _configured_document_rows(ft, rows: list[dict], open_preview, delete_template) -> list:
+    if not rows:
+        return [ft.Text("No document templates configured yet.", selectable=True)]
+    controls = []
+    for row in rows:
+        variables = ", ".join(row.get("variables", [])) or "none"
+        file_name = Path(row["file_path"]).name if row.get("file_path") else "inline template"
+        label = f"{row['name']} ({file_name})"
+        controls.append(
+            ft.Container(
+                padding=10,
+                border_radius=12,
+                border=_border_all(ft, 1, ft.Colors.BLUE_GREY_100),
+                content=ft.Row(
+                    [
+                        ft.Column(
+                            [
+                                ft.Text(row["name"], weight=ft.FontWeight.BOLD, selectable=True),
+                                ft.Text(f"{file_name} | Variables: {variables}", size=12, selectable=True),
+                            ],
+                            spacing=2,
+                            expand=True,
+                        ),
+                        ft.OutlinedButton(
+                            "Open",
+                            on_click=lambda _event, template_id=row["id"], title=label: open_preview(int(template_id), title),
+                        ),
+                        ft.OutlinedButton(
+                            "Delete",
+                            on_click=lambda _event, template_id=row["id"]: delete_template(int(template_id)),
+                        ),
+                    ],
+                ),
+            )
+        )
+    return controls
 
 
 def _client_compliance_status(summary) -> str:

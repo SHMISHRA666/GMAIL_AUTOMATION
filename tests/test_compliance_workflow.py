@@ -314,7 +314,7 @@ def test_modern_controller_excel_persistence_overwrites_stale_quarter_rows_and_w
         controller.save_document_templates(quarter_id, str(letter_path))
         assert controller.auto_map_variables(quarter_id) == "Mappings valid."
         controller.run_generation(quarter_id)
-        controller.queue_and_preview_send(quarter_id, "Confirm {{ party_name }}", "Balance is {{ balance }}")
+        controller.queue_and_preview_send(quarter_id)
 
         assert len(controller.quarter_counterparty_statuses(quarter_id)) == 2
 
@@ -363,7 +363,7 @@ def test_modern_controller_configure_flow_import_templates_mapping_and_summary(t
         imported_summary = controller.get_client_compliance_summary(created["id"])
 
         generation_message = controller.run_generation(quarter_id)
-        queue_message = controller.queue_and_preview_send(quarter_id, "Confirm {{ party_name }}", "Balance is {{ balance }}")
+        queue_message = controller.queue_and_preview_send(quarter_id)
         completed_summary = controller.get_client_compliance_summary(created["id"])
 
         assert import_message == "Imported 2 row(s) from 1 sheet(s)."
@@ -405,7 +405,7 @@ def test_modern_controller_row_level_compliance_detail_tracks_workflow_steps(tmp
         controller.save_document_templates(quarter_id, str(letter_path))
         assert controller.auto_map_variables(quarter_id) == "Mappings valid."
         controller.run_generation(quarter_id)
-        controller.queue_and_preview_send(quarter_id, "Confirm {{ party_name }}", "Balance is {{ balance }}")
+        controller.queue_and_preview_send(quarter_id)
 
         completed_rows = controller.quarter_counterparty_statuses(quarter_id)
 
@@ -437,7 +437,7 @@ def test_modern_controller_selected_workflow_retrigger_affects_only_selected_row
         alpha_id = next(row["counterparty_id"] for row in rows if row["party_name"] == "Alpha Finance")
 
         with pytest.raises(ValueError, match="Generate documents"):
-            controller.queue_and_preview_send_selected(quarter_id, {alpha_id}, "Confirm {{ party_name }}", "Balance is {{ balance }}")
+            controller.queue_and_preview_send_selected(quarter_id, {alpha_id})
         assert controller.regenerate_documents(quarter_id, {alpha_id}) == "Regenerated 1 selected document job(s); 0 need attention."
         with Session(controller.engine) as session:
             session.add(
@@ -454,7 +454,7 @@ def test_modern_controller_selected_workflow_retrigger_affects_only_selected_row
                 )
             )
             session.commit()
-        assert controller.queue_and_preview_send_selected(quarter_id, {alpha_id}, "Confirm {{ party_name }}", "Balance is {{ balance }}") == (
+        assert controller.queue_and_preview_send_selected(quarter_id, {alpha_id}) == (
             "Queued 1 selected email(s); marked 1 sent in preview mode."
         )
 
@@ -501,6 +501,39 @@ def test_modern_controller_doc_regeneration_readiness_not_blocked_by_mail_only_m
         controller.close()
 
 
+def test_modern_controller_reset_status_autofills_missing_document_mappings(tmp_path: Path) -> None:
+    controller = ModernComplianceController(tmp_path / "modern.db")
+    workbook_path = _sample_workbook(tmp_path)
+    doc_path = tmp_path / "doc.txt"
+    doc_path.write_text("Hello {{ Party Name }}", encoding="utf-8")
+
+    try:
+        created = controller.create_client_record("Org Two")
+        controller.create_quarter(created["id"], "2026-27", "Q1")
+        quarter_id = controller.current_quarter_id_for_client(created["id"])
+        controller.import_workbook(quarter_id, str(workbook_path), client_id=created["id"])
+        controller.save_document_templates(quarter_id, str(doc_path))
+        controller.save_mail_templates(quarter_id, "Sub {{ party_name }}", "Body {{ balance }}")
+        controller.auto_map_variables(quarter_id)
+
+        # Simulate stale mapping state that misses the newly required "Party Name" variable.
+        with Session(controller.engine) as session:
+            TemplateService(session).save_mappings(quarter_id, {"party_name": ("excel_column", "Party Name", "")})
+
+        before = controller.quarter_workflow_readiness(quarter_id)
+        assert before["document_mapping_errors"] == ["Party Name: missing mapping"]
+        assert before["can_generate_documents"] is False
+
+        message = controller.reset_quarter_after_config_change(quarter_id, reset_documents=True)
+        after = controller.quarter_workflow_readiness(quarter_id)
+
+        assert "Auto-mapped" in message
+        assert after["document_mapping_errors"] == []
+        assert after["can_generate_documents"] is True
+    finally:
+        controller.close()
+
+
 def test_modern_controller_send_mail_selected_requires_send_mode_and_credentials(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     controller = ModernComplianceController(tmp_path / "modern.db")
@@ -520,7 +553,7 @@ def test_modern_controller_send_mail_selected_requires_send_mode_and_credentials
         controller.regenerate_documents(quarter_id, row_ids)
 
         with pytest.raises(ValueError, match="Enable send mode"):
-            controller.send_mail_selected(quarter_id, row_ids, "Confirm {{ party_name }}", "Balance is {{ balance }}")
+            controller.send_mail_selected(quarter_id, row_ids)
     finally:
         controller.close()
 
@@ -542,6 +575,146 @@ def test_modern_controller_mail_builtin_variables_do_not_require_mapping(tmp_pat
         readiness = controller.quarter_workflow_readiness(quarter_id)
 
         assert readiness["mail_mapping_errors"] == []
+    finally:
+        controller.close()
+
+
+def test_modern_controller_mail_template_preview_uses_latest_active_template(tmp_path: Path) -> None:
+    controller = ModernComplianceController(tmp_path / "modern.db")
+    try:
+        created = controller.create_client_record("Purple United")
+        controller.create_quarter(created["id"], "2026-27", "Q1")
+        quarter_id = controller.current_quarter_id_for_client(created["id"])
+        controller.save_mail_templates(quarter_id, "Original subject", "Original body")
+
+        with Session(controller.engine) as session:
+            dao = TemplateDAO(session)
+            dao.create_template(
+                template_type="mail_subject",
+                name="Legacy Subject",
+                version="legacy-sub",
+                checksum="legacy-sub",
+                client_quarter_id=quarter_id,
+                content_text="Legacy subject should not win",
+            )
+            dao.create_template(
+                template_type="mail_body",
+                name="Legacy Body",
+                version="legacy-body",
+                checksum="legacy-body",
+                client_quarter_id=quarter_id,
+                content_text="Legacy body should not win",
+            )
+
+        controller.save_mail_templates(quarter_id, "Newest subject", "Newest body")
+        preview = controller.preview_mail_templates(quarter_id)
+
+        assert preview == {"subject": "Newest subject", "body": "Newest body"}
+    finally:
+        controller.close()
+
+
+def test_modern_controller_mail_queue_uses_saved_templates_per_client_and_quarter(tmp_path: Path) -> None:
+    controller = ModernComplianceController(tmp_path / "modern.db")
+    workbook_path = _sample_workbook(tmp_path)
+    letter_path = tmp_path / "letter.txt"
+    letter_path.write_text("Letter for {{ party_name }}", encoding="utf-8")
+    try:
+        client_a = controller.create_client_record("Client A")
+        controller.create_quarter(client_a["id"], "2026-27", "Q1")
+        quarter_a = controller.current_quarter_id_for_client(client_a["id"])
+        controller.import_workbook(quarter_a, str(workbook_path), client_id=client_a["id"])
+        controller.save_document_templates(quarter_a, str(letter_path))
+        controller.save_mail_templates(quarter_a, "A subject {{ party_name }}", "A body {{ balance }}")
+        controller.auto_map_variables(quarter_a)
+        controller.run_generation(quarter_a)
+
+        client_b = controller.create_client_record("Client B")
+        controller.create_quarter(client_b["id"], "2026-27", "Q1")
+        quarter_b = controller.current_quarter_id_for_client(client_b["id"])
+        controller.import_workbook(quarter_b, str(workbook_path), client_id=client_b["id"])
+        controller.save_document_templates(quarter_b, str(letter_path))
+        controller.save_mail_templates(quarter_b, "B subject {{ party_name }}", "B body {{ balance }}")
+        controller.auto_map_variables(quarter_b)
+        controller.run_generation(quarter_b)
+
+        assert controller.queue_and_preview_send(quarter_a) == "Queued 2 email(s); marked 2 sent in preview mode."
+        assert controller.queue_and_preview_send(quarter_b) == "Queued 2 email(s); marked 2 sent in preview mode."
+
+        with Session(controller.engine) as session:
+            messages_a = list(session.exec(select(EmailMessage).where(EmailMessage.client_quarter_id == quarter_a)))
+            messages_b = list(session.exec(select(EmailMessage).where(EmailMessage.client_quarter_id == quarter_b)))
+
+        assert len(messages_a) == 2
+        assert len(messages_b) == 2
+        assert all(message.subject.startswith("A subject ") for message in messages_a)
+        assert all(message.body.startswith("A body ") for message in messages_a)
+        assert all(message.subject.startswith("B subject ") for message in messages_b)
+        assert all(message.body.startswith("B body ") for message in messages_b)
+    finally:
+        controller.close()
+
+
+def test_modern_controller_document_reads_are_scoped_to_client_quarter(tmp_path: Path) -> None:
+    controller = ModernComplianceController(tmp_path / "modern.db")
+    workbook_path = _sample_workbook(tmp_path)
+    letter_path = tmp_path / "letter.txt"
+    letter_path.write_text("Letter for {{ party_name }}", encoding="utf-8")
+    try:
+        client_a = controller.create_client_record("Client A")
+        controller.create_quarter(client_a["id"], "2026-27", "Q1")
+        quarter_a = controller.current_quarter_id_for_client(client_a["id"])
+        controller.import_workbook(quarter_a, str(workbook_path), client_id=client_a["id"])
+        controller.save_document_templates(quarter_a, str(letter_path))
+        controller.auto_map_variables(quarter_a)
+        controller.run_generation(quarter_a)
+
+        client_b = controller.create_client_record("Client B")
+        controller.create_quarter(client_b["id"], "2026-27", "Q1")
+        quarter_b = controller.current_quarter_id_for_client(client_b["id"])
+        controller.import_workbook(quarter_b, str(workbook_path), client_id=client_b["id"])
+
+        rows_b = controller.quarter_counterparty_statuses(quarter_b)
+        target_b_id = rows_b[0]["counterparty_id"]
+
+        with Session(controller.engine) as session:
+            job_a = session.exec(select(DocumentJob).where(DocumentJob.client_quarter_id == quarter_a)).first()
+            assert job_a is not None and job_a.id is not None
+            session.add(
+                GeneratedDocument(
+                    document_job_id=job_a.id,
+                    counterparty_id=target_b_id,
+                    template_id=job_a.template_id,
+                    file_type="txt",
+                    file_path=str(letter_path),
+                    checksum="corrupt-row",
+                    template_version="test",
+                )
+            )
+            session.commit()
+
+        refreshed_rows_b = controller.quarter_counterparty_statuses(quarter_b)
+        leaked_docs = controller.generated_documents_for_counterparty(quarter_b, target_b_id)
+
+        assert all(row["document_count"] == 0 for row in refreshed_rows_b)
+        assert all(row["document_status"] == "not generated" for row in refreshed_rows_b)
+        assert leaked_docs == []
+    finally:
+        controller.close()
+
+
+def test_modern_controller_new_client_without_quarter_is_listed_for_configuration(tmp_path: Path) -> None:
+    controller = ModernComplianceController(tmp_path / "modern.db")
+    try:
+        seeded = controller.create_client_record("Purple United")
+        controller.create_quarter(seeded["id"], "2026-27", "Q1")
+        controller.create_client_record("acme")
+
+        cards = controller.client_cards()
+        acme_card = next(card for card in cards if card["client_name"] == "acme")
+        assert acme_card["quarter_id"] is None
+        assert any(card["client_name"] == "Purple United" for card in cards)
+        assert any(card["client_name"] == "acme" for card in cards)
     finally:
         controller.close()
 
@@ -572,6 +745,33 @@ def test_modern_controller_mail_settings_roundtrip(tmp_path: Path) -> None:
         assert settings["smtp_password_saved"] is True
         with Session(controller.engine) as session:
             assert _load_smtp_password(SettingsService(session), "gmail_smtp", "sender@example.com") == "secret"
+    finally:
+        controller.close()
+
+
+def test_modern_controller_add_and_delete_document_template_roundtrip(tmp_path: Path) -> None:
+    controller = ModernComplianceController(tmp_path / "modern.db")
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("First {{ party_name }}", encoding="utf-8")
+    second.write_text("Second {{ party_name }}", encoding="utf-8")
+    try:
+        created = controller.create_client_record("Purple United")
+        controller.create_quarter(created["id"], "2026-27", "Q1")
+        quarter_id = controller.current_quarter_id_for_client(created["id"])
+        controller.save_document_templates(quarter_id, str(first))
+        controller.add_document_templates(quarter_id, str(second))
+
+        templates = controller.list_document_templates(quarter_id)
+        names = {row["name"] for row in templates}
+        assert names == {"first", "second"}
+
+        first_template_id = next(row["id"] for row in templates if row["name"] == "first")
+        assert controller.delete_document_template(first_template_id).startswith("Deleted document template:")
+
+        remaining = controller.list_document_templates(quarter_id)
+        assert len(remaining) == 1
+        assert remaining[0]["name"] == "second"
     finally:
         controller.close()
 
