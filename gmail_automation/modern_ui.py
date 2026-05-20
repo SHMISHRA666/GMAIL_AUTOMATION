@@ -2865,12 +2865,14 @@ def _mapping_errors_for_variables(variables: list[str], mappings: dict[str, obje
             continue
         mapping = mappings.get(variable)
         if mapping is None:
+            if _best_column_match(variable, available_columns):
+                continue
             errors.append(f"{variable}: missing mapping")
             continue
         source_type = getattr(mapping, "source_type", "")
         source_key = getattr(mapping, "source_key", "")
         constant_value = getattr(mapping, "constant_value", "")
-        if source_type == "excel_column" and source_key not in available_columns:
+        if source_type == "excel_column" and not _best_column_match(source_key, available_columns):
             errors.append(f"{variable}: Excel column not found: {source_key}")
         elif source_type == "constant" and not constant_value:
             errors.append(f"{variable}: constant value is empty")

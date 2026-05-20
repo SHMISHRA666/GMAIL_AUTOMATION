@@ -329,9 +329,11 @@ class TemplateService:
                 continue
             mapping = mappings.get(variable)
             if mapping is None:
+                if _best_column_match(variable, available_columns):
+                    continue
                 errors.append(f"{variable}: missing mapping")
                 continue
-            if mapping.source_type == "excel_column" and mapping.source_key not in available_columns:
+            if mapping.source_type == "excel_column" and not _best_column_match(mapping.source_key, available_columns):
                 errors.append(f"{variable}: Excel column not found: {mapping.source_key}")
             elif mapping.source_type == "constant" and not mapping.constant_value:
                 errors.append(f"{variable}: constant value is empty")
@@ -354,6 +356,8 @@ class TemplateService:
             "quarter.financial_year": quarter.financial_year if quarter is not None else "",
             "quarter.quarter": quarter.quarter if quarter is not None else "",
         }
+        for field_name, field_value in row_fields.items():
+            flat_values.setdefault(field_name, field_value)
         for variable, mapping in mappings.items():
             flat_values[variable] = _resolve_mapping(mapping, row_fields, counterparty)
         return build_nested_context(flat_values)
@@ -808,10 +812,17 @@ def _resolve_mapping(mapping: VariableMapping, row_fields: dict[str, str], count
     if mapping.source_type == "constant":
         return mapping.constant_value
     if mapping.source_type == "excel_column":
-        return row_fields.get(mapping.source_key, "")
+        return _row_field_value(row_fields, mapping.source_key)
     if mapping.source_type == "counterparty_field":
         return str(getattr(counterparty, mapping.source_key, ""))
     return ""
+
+
+def _row_field_value(row_fields: dict[str, str], source_key: str) -> str:
+    if source_key in row_fields:
+        return row_fields[source_key]
+    candidate = _best_column_match(source_key, set(row_fields))
+    return row_fields.get(candidate, "") if candidate else ""
 
 
 def _headers(ws) -> dict[str, int]:
@@ -927,6 +938,26 @@ def _text(value: object) -> str:
 def _safe_id(value: str) -> str:
     text = "".join(char if char.isalnum() else "_" for char in value.strip()).strip("_")
     return text or "row"
+
+
+def _best_column_match(variable: str, columns: set[str]) -> str:
+    normalized_variable = variable.lower().replace("row.", "").replace("_", " ").strip()
+    for column in columns:
+        if column.lower() == normalized_variable:
+            return column
+    for column in columns:
+        simplified = column.lower().replace("(address)", "").replace("_", " ").strip()
+        if simplified == normalized_variable or normalized_variable in simplified:
+            return column
+    aliases = {
+        "party name": "Party Name",
+        "party_name": "Party Name",
+        "email": "Email To(Address)",
+        "balance": "Balance",
+        "party type": "Party Type",
+    }
+    candidate = aliases.get(normalized_variable)
+    return candidate if candidate in columns else ""
 
 
 def _sha256_file(path: Path) -> str:

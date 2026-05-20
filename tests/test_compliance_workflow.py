@@ -521,13 +521,13 @@ def test_modern_controller_reset_status_autofills_missing_document_mappings(tmp_
             TemplateService(session).save_mappings(quarter_id, {"party_name": ("excel_column", "Party Name", "")})
 
         before = controller.quarter_workflow_readiness(quarter_id)
-        assert before["document_mapping_errors"] == ["Party Name: missing mapping"]
-        assert before["can_generate_documents"] is False
+        assert before["document_mapping_errors"] == []
+        assert before["can_generate_documents"] is True
 
         message = controller.reset_quarter_after_config_change(quarter_id, reset_documents=True)
         after = controller.quarter_workflow_readiness(quarter_id)
 
-        assert "Auto-mapped" in message
+        assert message.startswith("Reset 2 counterparty row(s):")
         assert after["document_mapping_errors"] == []
         assert after["can_generate_documents"] is True
     finally:
@@ -945,6 +945,37 @@ def test_modern_controller_multi_document_save_validates_pdf_and_text_variables(
         controller.close()
 
 
+def test_document_templates_support_new_excel_columns_without_manual_mapping(tmp_path: Path) -> None:
+    engine = init_db(tmp_path / "compliance.db")
+    workbook_path = _type_workbook(tmp_path)
+    doc_path = tmp_path / "type_confirmation.txt"
+    doc_path.write_text("Type {{ Type }} for {{ Party Name }}", encoding="utf-8")
+
+    with Session(engine) as session:
+        client, quarter = _client_and_quarter(session)
+        ImportService(session).import_excel(client.id, quarter.id, workbook_path)
+        template_service = TemplateService(session)
+        template_service.save_document_templates(
+            quarter.id,
+            [doc_path],
+            storage_dir=tmp_path / "template_store",
+            client_id=client.id,
+        )
+
+        # New Excel columns should work directly via {{ Column Name }} placeholders.
+        assert template_service.validate_mappings(quarter.id, {"Party Name", "Type", "Email To(Address)", "Balance"}) == []
+
+        workflow = WorkflowService(session, output_root=tmp_path / "generated")
+        workflow.enqueue_document_generation(quarter.id)
+        generated = workflow.generate_pending_documents(quarter.id)
+
+    assert len(generated) == 1
+    assert generated[0].status == "generated"
+    text = Path(generated[0].file_path).read_text(encoding="utf-8")
+    assert "Type Creditor" in text
+    assert "Alpha Finance" in text
+
+
 def _client_and_quarter(session: Session):
     service = ClientService(session)
     client = service.create_client("Purple United", "listed_org")
@@ -962,6 +993,17 @@ def _sample_workbook(tmp_path: Path) -> Path:
     ws.append(["S.No.", "Party Type", "Party Name", "Email To(Address)", "Balance", "Custom Ref"])
     ws.append([1, "Creditor", "Alpha Finance", "alpha@example.com", "1000", "A-1"])
     ws.append([2, "Creditor", "Beta Bank", "beta@example.com", "2000", "B-1"])
+    wb.save(workbook_path)
+    return workbook_path
+
+
+def _type_workbook(tmp_path: Path) -> Path:
+    workbook_path = tmp_path / "type_master.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Creditors"
+    ws.append(["S.No.", "Type", "Party Name", "Email To(Address)", "Balance"])
+    ws.append([1, "Creditor", "Alpha Finance", "alpha@example.com", "1000"])
     wb.save(workbook_path)
     return workbook_path
 
