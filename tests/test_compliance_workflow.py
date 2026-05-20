@@ -8,7 +8,7 @@ from sqlmodel import Session, select
 
 from gmail_automation.dao import ImportDAO, TemplateDAO, WorkflowDAO
 from gmail_automation.db import init_db
-from gmail_automation.db_models import Counterparty, CounterpartyField, DocumentJob, EmailMessage, GeneratedDocument
+from gmail_automation.db_models import Client, ClientQuarter, Counterparty, CounterpartyField, DocumentJob, EmailMessage, GeneratedDocument, Template
 from gmail_automation.docx_utils import build_docx_from_paragraphs, extract_docx_text
 from gmail_automation.liquid_utils import extract_liquid_variables, render_liquid_template
 from gmail_automation.modern_ui import ModernComplianceController, _attach_file_picker, _load_smtp_password, build_modern_ui_controls
@@ -149,13 +149,13 @@ def test_templates_mappings_generation_and_dashboard_queries(tmp_path: Path) -> 
     assert all(result.status == "generated" for result in generated)
     assert len(messages) == 2
     assert sent == 2
-    assert summary.fully_compliant == 2
-    assert summary.non_compliant == 0
+    assert summary.fully_compliant == 0
+    assert summary.non_compliant == 2
     assert job_counts["generated"] == 2
-    assert email_counts["sent"] == 2
+    assert email_counts["preview_sent"] == 2
     assert {job.status for job in persisted_jobs} == {"generated"}
-    assert {message.status for message in persisted_messages} == {"sent"}
-    assert {counterparty.status for counterparty in persisted_counterparties} == {"compliant"}
+    assert {message.status for message in persisted_messages} == {"preview_sent"}
+    assert {counterparty.status for counterparty in persisted_counterparties} == {"non_compliant"}
 
 
 def test_document_template_files_generate_for_all_counterparties(tmp_path: Path) -> None:
@@ -373,9 +373,9 @@ def test_modern_controller_configure_flow_import_templates_mapping_and_summary(t
         assert imported_summary["summary"].total == 2
         assert imported_summary["summary"].non_compliant == 2
         assert generation_message == "Generated 2 document job(s); 0 need attention."
-        assert queue_message == "Queued 2 email(s); marked 2 sent in preview mode."
-        assert completed_summary["summary"].fully_compliant == 2
-        assert completed_summary["summary"].email_counts["sent"] == 2
+        assert queue_message == "Queued 2 email(s); marked 2 as preview (not delivered)."
+        assert completed_summary["summary"].fully_compliant == 0
+        assert completed_summary["summary"].email_counts["preview_sent"] == 2
         assert completed_summary["summary"].generation_counts["generated"] == 2
     finally:
         controller.close()
@@ -411,9 +411,9 @@ def test_modern_controller_row_level_compliance_detail_tracks_workflow_steps(tmp
 
         assert {row["document_status"] for row in completed_rows} == {"generated (1)"}
         assert {row["document_count"] for row in completed_rows} == {1}
-        assert {row["compliance_status"] for row in completed_rows} == {"compliant"}
-        assert {row["mail_status"] for row in completed_rows} == {"sent"}
-        assert {row["mail_sent"] for row in completed_rows} == {"Yes"}
+        assert {row["compliance_status"] for row in completed_rows} == {"non_compliant"}
+        assert {row["mail_status"] for row in completed_rows} == {"preview_sent"}
+        assert {row["mail_sent"] for row in completed_rows} == {"No"}
     finally:
         controller.close()
 
@@ -455,7 +455,7 @@ def test_modern_controller_selected_workflow_retrigger_affects_only_selected_row
             )
             session.commit()
         assert controller.queue_and_preview_send_selected(quarter_id, {alpha_id}) == (
-            "Queued 1 selected email(s); marked 1 sent in preview mode."
+            "Queued 1 selected email(s); marked 1 as preview (not delivered)."
         )
 
         completed_rows = {row["party_name"]: row for row in controller.quarter_counterparty_statuses(quarter_id)}
@@ -463,9 +463,9 @@ def test_modern_controller_selected_workflow_retrigger_affects_only_selected_row
             alpha_messages = list(session.exec(select(EmailMessage).where(EmailMessage.counterparty_id == alpha_id)))
 
         assert completed_rows["Alpha Finance"]["document_status"] == "generated (1)"
-        assert completed_rows["Alpha Finance"]["compliance_status"] == "compliant"
-        assert completed_rows["Alpha Finance"]["mail_status"] == "sent"
-        assert completed_rows["Alpha Finance"]["mail_sent"] == "Yes"
+        assert completed_rows["Alpha Finance"]["compliance_status"] == "non_compliant"
+        assert completed_rows["Alpha Finance"]["mail_status"] == "preview_sent"
+        assert completed_rows["Alpha Finance"]["mail_sent"] == "No"
         assert {message.retry_locked for message in alpha_messages} == {False}
         assert {message.error for message in alpha_messages} == {""}
         assert completed_rows["Beta Bank"]["document_status"] == "not generated"
@@ -638,8 +638,8 @@ def test_modern_controller_mail_queue_uses_saved_templates_per_client_and_quarte
         controller.auto_map_variables(quarter_b)
         controller.run_generation(quarter_b)
 
-        assert controller.queue_and_preview_send(quarter_a) == "Queued 2 email(s); marked 2 sent in preview mode."
-        assert controller.queue_and_preview_send(quarter_b) == "Queued 2 email(s); marked 2 sent in preview mode."
+        assert controller.queue_and_preview_send(quarter_a) == "Queued 2 email(s); marked 2 as preview (not delivered)."
+        assert controller.queue_and_preview_send(quarter_b) == "Queued 2 email(s); marked 2 as preview (not delivered)."
 
         with Session(controller.engine) as session:
             messages_a = list(session.exec(select(EmailMessage).where(EmailMessage.client_quarter_id == quarter_a)))
@@ -807,6 +807,66 @@ def test_modern_controller_generated_document_preview_for_selected_counterparty(
         assert "Alpha Finance" in preview
         assert "1000" in preview
         assert "Alpha Finance" in controller.preview_generated_document(generated_docs[1]["id"])
+    finally:
+        controller.close()
+
+
+def test_modern_controller_delete_client_removes_associated_workflow_and_config_data(tmp_path: Path) -> None:
+    controller = ModernComplianceController(tmp_path / "modern.db")
+    workbook_path = _sample_workbook(tmp_path)
+    letter_path = tmp_path / "letter.txt"
+    letter_path.write_text("Letter for {{ party_name }}: {{ balance }}", encoding="utf-8")
+
+    try:
+        victim = controller.create_client_record("Delete Me")
+        controller.create_quarter(victim["id"], "2026-27", "Q1")
+        victim_quarter_id = controller.current_quarter_id_for_client(victim["id"])
+        controller.import_workbook(victim_quarter_id, str(workbook_path), client_id=victim["id"])
+        controller.save_document_templates(victim_quarter_id, str(letter_path))
+        controller.save_mail_templates(victim_quarter_id, "Confirm {{ party_name }}", "Balance is {{ balance }}")
+        controller.auto_map_variables(victim_quarter_id)
+        controller.run_generation(victim_quarter_id)
+        controller.queue_and_preview_send(victim_quarter_id)
+        generated_dir = tmp_path / "generated" / str(victim_quarter_id)
+        template_dir = tmp_path / "templates" / str(victim_quarter_id)
+        assert generated_dir.exists()
+        assert template_dir.exists()
+
+        survivor = controller.create_client_record("Keep Me")
+        controller.create_quarter(survivor["id"], "2026-27", "Q1")
+        survivor_quarter_id = controller.current_quarter_id_for_client(survivor["id"])
+        controller.import_workbook(survivor_quarter_id, str(workbook_path), client_id=survivor["id"])
+
+        message = controller.delete_client_record(victim["id"])
+
+        with Session(controller.engine) as session:
+            victim_client = session.get(Client, victim["id"])
+            victim_rows = session.exec(select(Counterparty).where(Counterparty.client_id == victim["id"])).all()
+            victim_templates = session.exec(
+                select(Template).where((Template.client_id == victim["id"]) | (Template.client_quarter_id == victim_quarter_id))
+            ).all()
+            victim_quarters = session.exec(select(ClientQuarter).where(ClientQuarter.client_id == victim["id"])).all()
+            victim_jobs = session.exec(select(DocumentJob).where(DocumentJob.client_quarter_id == victim_quarter_id)).all()
+            victim_job_ids = [job.id for job in victim_jobs if job.id is not None]
+            victim_docs = (
+                session.exec(select(GeneratedDocument).where(GeneratedDocument.document_job_id.in_(victim_job_ids))).all()
+                if victim_job_ids
+                else []
+            )
+            victim_emails = session.exec(select(EmailMessage).where(EmailMessage.client_quarter_id == victim_quarter_id)).all()
+            survivor_rows = session.exec(select(Counterparty).where(Counterparty.client_id == survivor["id"])).all()
+
+        assert message.startswith("Deleted client: Delete Me.")
+        assert victim_client is None
+        assert victim_rows == []
+        assert victim_templates == []
+        assert victim_quarters == []
+        assert victim_jobs == []
+        assert victim_docs == []
+        assert victim_emails == []
+        assert len(survivor_rows) == 2
+        assert not generated_dir.exists()
+        assert not template_dir.exists()
     finally:
         controller.close()
 

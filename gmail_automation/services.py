@@ -462,6 +462,7 @@ class ComplianceService:
                     EmailMessage.status == "sent",
                 )
             )
+            if not (message.smtp_message_id or "").startswith("preview-")
         }
 
         changed = 0
@@ -637,7 +638,7 @@ class WorkflowService:
                 break
             try:
                 if preview:
-                    self.workflow.mark_email_sent(message.id, smtp_message_id=f"preview-{message.id}")
+                    self.workflow.mark_email_preview_sent(message.id, smtp_message_id=f"preview-{message.id}")
                 else:
                     result = self._send_email_message(message)
                     self.workflow.mark_email_sent(message.id, result.smtp_message_id, result.gmail_thread_id)

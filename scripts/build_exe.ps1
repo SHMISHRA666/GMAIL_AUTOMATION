@@ -93,6 +93,31 @@ if (-not $SkipInstall) {
     Invoke-Python -Args @("-m", "pip", "install", "-r", "requirements.txt")
 }
 
+# Bundle Flet desktop runtime so modern UI does not download on first launch.
+$fletCacheDir = (Invoke-Python -Args @(
+        "-c",
+        "import flet_desktop; from pathlib import Path; cache=flet_desktop.ensure_client_cached(); print(Path(cache).resolve())"
+) | Select-Object -Last 1).Trim()
+if (-not $fletCacheDir) {
+    throw "Could not resolve Flet desktop cache directory."
+}
+if (-not (Test-Path $fletCacheDir)) {
+    throw "Flet desktop cache directory not found: $fletCacheDir"
+}
+$fletClientExe = Join-Path $fletCacheDir "flet\flet.exe"
+if (-not (Test-Path $fletClientExe)) {
+    throw "Flet desktop runtime is incomplete (missing flet.exe): $fletClientExe"
+}
+$fletArtifactPath = Join-Path $repoRoot "build\flet-windows.zip"
+if (Test-Path $fletArtifactPath) {
+    Remove-Item $fletArtifactPath -Force
+}
+Write-Host "Bundling cached Flet desktop runtime from: $fletCacheDir"
+Compress-Archive -Path (Join-Path $fletCacheDir "*") -DestinationPath $fletArtifactPath -CompressionLevel Optimal -Force
+if (-not (Test-Path $fletArtifactPath)) {
+    throw "Failed to create bundled Flet artifact: $fletArtifactPath"
+}
+
 $pyInstallerArgs = @(
     "-m", "PyInstaller",
     "--noconfirm",
@@ -107,6 +132,7 @@ $pyInstallerArgs = @(
     "--add-data", ((Join-Path $repoRoot "Balance confirmation letter.docx") + ";gmail_automation/resources"),
     "--add-data", ((Join-Path $repoRoot "On Vendor letter.docx") + ";gmail_automation/resources"),
     "--add-data", ((Join-Path $repoRoot "Authorisation for Direct Balance Confirmation.pdf") + ";gmail_automation/resources"),
+    "--add-data", ($fletArtifactPath + ";flet_desktop/app"),
     "run_gmail_automation.py"
 )
 

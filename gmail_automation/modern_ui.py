@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import threading
 from pathlib import Path
 
@@ -90,6 +91,16 @@ class ModernComplianceController:
 
     def create_client(self, name: str, client_type: str = "listed_org") -> str:
         return str(self.create_client_record(name, client_type)["message"])
+
+    def delete_client_record(self, client_id: int) -> str:
+        with Session(self.engine) as session:
+            name, quarter_ids = ClientDAO(session).delete_client(client_id)
+        for quarter_id in quarter_ids:
+            generated_dir = self.db_path.parent / "generated" / str(quarter_id)
+            template_dir = self.db_path.parent / "templates" / str(quarter_id)
+            shutil.rmtree(generated_dir, ignore_errors=True)
+            shutil.rmtree(template_dir, ignore_errors=True)
+        return f"Deleted client: {name}. Removed {len(quarter_ids)} quarter(s) with associated workflow/configuration data."
 
     def create_quarter(self, client_id: int, financial_year: str, quarter: str, current: bool = True) -> str:
         if not (financial_year or "").strip():
@@ -421,6 +432,7 @@ class ModernComplianceController:
                 and bool(send_config.smtp_password or send_config.app_password)
             )
             send_enabled = send_config.send_mode == "send" and smtp_ready
+            can_queue_mail = bool(counterparties) and len(mail_templates) >= 2 and not mail_mapping_errors
             return {
                 "counterparty_count": len(counterparties),
                 "import_count": len(imports),
@@ -431,7 +443,8 @@ class ModernComplianceController:
                 "document_mapping_errors": document_mapping_errors,
                 "mail_mapping_errors": mail_mapping_errors,
                 "can_generate_documents": bool(counterparties) and bool(document_templates) and not document_mapping_errors,
-                "can_send_mail": bool(counterparties) and len(mail_templates) >= 2 and not mail_mapping_errors and send_enabled,
+                "can_queue_mail": can_queue_mail,
+                "can_send_mail": can_queue_mail and send_enabled,
                 "send_mode": send_config.send_mode,
                 "send_enabled": send_enabled,
                 "mail_provider": send_config.mail_provider,
@@ -493,6 +506,17 @@ class ModernComplianceController:
                 jobs = jobs_by_counterparty.get(counterparty.id, [])
                 messages = emails_by_counterparty.get(counterparty.id, [])
                 latest_message = max(messages, key=lambda item: item.updated_at or item.created_at, default=None)
+                preview_marked = bool(
+                    latest_message
+                    and (
+                        latest_message.status == "preview_sent"
+                        or (
+                            latest_message.status == "sent"
+                            and (latest_message.smtp_message_id or "").startswith("preview-")
+                        )
+                    )
+                )
+                effective_mail_status = "preview_sent" if preview_marked else (latest_message.status if latest_message else "not generated")
                 rows.append(
                     {
                         "row": counterparty.source_row_number,
@@ -506,8 +530,8 @@ class ModernComplianceController:
                         "document_status": _document_status(jobs, documents),
                         "document_count": len(documents),
                         "documents": [_generated_document_summary(document) for document in documents if document.id is not None],
-                        "mail_status": latest_message.status if latest_message else "not generated",
-                        "mail_sent": "Yes" if latest_message and latest_message.status == "sent" else "No",
+                        "mail_status": effective_mail_status,
+                        "mail_sent": "Yes" if latest_message and latest_message.status == "sent" and not preview_marked else "No",
                     }
                 )
             return rows
@@ -550,7 +574,7 @@ class ModernComplianceController:
             workflow = WorkflowService(session, output_root=self.db_path.parent / "generated")
             messages = workflow.queue_email_messages(client_quarter_id, subject, body)
             sent = workflow.mark_preview_batch_sent(client_quarter_id)
-            return f"Queued {len(messages)} email(s); marked {sent} sent in preview mode."
+            return f"Queued {len(messages)} email(s); marked {sent} as preview (not delivered)."
 
     def queue_and_preview_send_selected(self, client_quarter_id: int, counterparty_ids: set[int]) -> str:
         if not counterparty_ids:
@@ -569,7 +593,7 @@ class ModernComplianceController:
             workflow = WorkflowService(session, output_root=self.db_path.parent / "generated")
             messages = workflow.queue_email_messages(client_quarter_id, subject, body, counterparty_ids=counterparty_ids)
             sent = workflow.mark_preview_batch_sent(client_quarter_id, counterparty_ids=counterparty_ids)
-            return f"Queued {len(messages)} selected email(s); marked {sent} sent in preview mode."
+            return f"Queued {len(messages)} selected email(s); marked {sent} as preview (not delivered)."
 
     def send_mail_selected(self, client_quarter_id: int, counterparty_ids: set[int]) -> str:
         if not counterparty_ids:
@@ -1311,8 +1335,12 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
             has_selection
             and selected_have_docs
             and readiness is not None
-            and readiness["can_send_mail"]
+            and readiness["can_queue_mail"]
         )
+        if readiness is not None and readiness["send_enabled"]:
+            queue_selected_button.text = "Send Mail for Selection"
+        else:
+            queue_selected_button.text = "Queue + Preview Send (Selection)"
         load_generated_docs_button.disabled = not selected_single_with_docs
         preview_generated_doc_button.disabled = not bool(generated_doc_dropdown.value)
 
@@ -1331,7 +1359,7 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
         elif readiness is not None and readiness["mail_mapping_errors"]:
             workflow_action_hint.value = "Fix mail mappings before sending mail."
         elif readiness is not None and not readiness["send_enabled"]:
-            workflow_action_hint.value = "Enable send mode and configure Gmail SMTP or Webtel SMTP to send live mail."
+            workflow_action_hint.value = "Preview mode is active. Selected rows can be queued in preview mode; switch send mode to 'send' for live mail."
         else:
             workflow_action_hint.value = "Selected rows are ready for document regeneration and live mail send."
 
@@ -1475,6 +1503,14 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
         refresh_compliance_rows()
         return message
 
+    def send_or_queue_selected_mail() -> str:
+        readiness = controller.quarter_workflow_readiness(selected_quarter_id())
+        if readiness["send_enabled"]:
+            return send_selected_mail()
+        message = controller.queue_and_preview_send_selected(selected_quarter_id(), selected_workflow_ids())
+        refresh_compliance_rows()
+        return message
+
     def open_client_compliance(client_id: int) -> str:
         quarter_id = controller.current_quarter_id_for_client(client_id)
         # Keep global quarter picker + Configure client's quarter picker aligned with the org we opened.
@@ -1501,6 +1537,54 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
             configure_quarter.value = None
         show_page("Configure")
         return "Opened client configuration."
+
+    def delete_client_action(client_id: int) -> str:
+        message = controller.delete_client_record(client_id)
+        if configure_client_id["value"] == client_id:
+            configure_client_id["value"] = None
+            configure_client.value = None
+            configure_quarter.value = None
+        selected_counterparty_ids.clear()
+        compliance_detail_visible["value"] = False
+        hide_generated_doc_bubble()
+        return message
+
+    def request_delete_client(client_id: int) -> None:
+        if page is None:
+            run_action(lambda: delete_client_action(client_id))
+            return
+
+        def close_dialog() -> None:
+            try:
+                page.pop_dialog()
+            except Exception:
+                try:
+                    dialog.open = False
+                    page.update()
+                except Exception:
+                    pass
+
+        def confirm_delete() -> None:
+            close_dialog()
+            run_action(lambda: delete_client_action(client_id))
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Delete client?"),
+            content=ft.Text(
+                "This permanently deletes the client and all related quarters, counterparties, templates, generated documents, and mail workflow records."
+            ),
+            actions=[
+                ft.TextButton("Cancel", on_click=lambda _event: close_dialog()),
+                ft.FilledButton("Delete", on_click=lambda _event: confirm_delete()),
+            ],
+        )
+        try:
+            page.show_dialog(dialog)
+        except Exception:
+            page.dialog = dialog
+            dialog.open = True
+            page.update()
 
     def refresh() -> None:
         if ui_guard["busy"]:
@@ -1532,7 +1616,14 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
         if not selected_quarter.value and current and current.id is not None:
             selected_quarter.value = str(current.id)
 
-        clients_list.controls = _client_card_controls(ft, snapshot["client_cards"], open_client_compliance, open_client_settings, run_action)
+        clients_list.controls = _client_card_controls(
+            ft,
+            snapshot["client_cards"],
+            open_client_compliance,
+            open_client_settings,
+            request_delete_client,
+            run_action,
+        )
         compliance_clients.controls = _compliance_client_controls(ft, snapshot["client_cards"], open_client_compliance, run_action)
 
         selected = snapshot["selected_quarter"]
@@ -1578,6 +1669,8 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
                     allowed.append("regenerate documents")
                 if readiness["can_send_mail"]:
                     allowed.append("send selected mail")
+                elif readiness["can_queue_mail"]:
+                    allowed.append("queue + preview send selected mail")
                 compliance_actions_allowed.value = "Actions allowed: " + (", ".join(allowed) if allowed else "finish configuration before row actions are enabled")
             except Exception as exc:
                 compliance_actions_allowed.value = f"Actions allowed: unavailable ({exc})"
@@ -1973,7 +2066,7 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
     select_batch_button = ft.OutlinedButton("Select Next Batch", on_click=lambda _event: run_action(select_next_counterparty_batch), disabled=True)
     clear_selection_button = ft.OutlinedButton("Clear Selection", on_click=lambda _event: run_action(clear_counterparty_selection), disabled=True)
     regenerate_selected_button = ft.FilledButton("Regenerate Docs for Selection", on_click=lambda _event: run_action(regenerate_selected_documents), disabled=True)
-    queue_selected_button = ft.FilledButton("Send Mail for Selection", on_click=lambda _event: run_action(send_selected_mail), disabled=True)
+    queue_selected_button = ft.FilledButton("Send Mail for Selection", on_click=lambda _event: run_action(send_or_queue_selected_mail), disabled=True)
     load_generated_docs_button = ft.OutlinedButton("Load Generated Docs", on_click=lambda _event: run_action(load_generated_documents_for_selected_row), disabled=True)
     preview_generated_doc_button = ft.OutlinedButton("Preview Selected Generated Doc", on_click=lambda _event: run_action(preview_selected_generated_document), disabled=True)
     generated_doc_dropdown.on_change = on_generated_doc_dropdown_changed
@@ -2363,7 +2456,7 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
                         ft.FilledButton("Queue + Preview Send", on_click=lambda _event: run_action(lambda: controller.queue_and_preview_send(selected_quarter_id()))),
                     ]
                 ),
-                ft.Text("Preview send marks queued emails as sent without contacting the mail provider. Live sends use configured Gmail or Webtel SMTP settings."),
+                ft.Text("Preview send marks queued emails as preview only (not delivered). Live sends use configured Gmail or Webtel SMTP settings."),
             ]
         ),
     )
@@ -2529,7 +2622,7 @@ def _quarter_label(quarter: ClientQuarter, client_lookup: dict[int | None, str])
     return f"{client_name} | {quarter.financial_year} {quarter.quarter} | {current}"
 
 
-def _client_card_controls(ft, cards: list[dict], open_compliance, open_settings, run_action) -> list:
+def _client_card_controls(ft, cards: list[dict], open_compliance, open_settings, request_delete_client, run_action) -> list:
     if not cards:
         return [ft.Text("No clients created yet.", selectable=True)]
     controls = []
@@ -2547,6 +2640,7 @@ def _client_card_controls(ft, cards: list[dict], open_compliance, open_settings,
                             [
                                 ft.FilledButton("Compliance", on_click=lambda _event, client_id=card["client_id"]: run_action(lambda: open_compliance(client_id))),
                                 ft.OutlinedButton("Configure", on_click=lambda _event, client_id=card["client_id"]: run_action(lambda: open_settings(client_id))),
+                                ft.OutlinedButton("Delete", on_click=lambda _event, client_id=card["client_id"]: request_delete_client(client_id)),
                             ]
                         ),
                     ]

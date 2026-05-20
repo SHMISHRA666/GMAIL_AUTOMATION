@@ -69,6 +69,72 @@ class ClientDAO:
             statement = statement.where(ClientQuarter.client_id == client_id)
         return list(self.session.exec(statement))
 
+    def delete_client(self, client_id: int) -> tuple[str, list[int]]:
+        client = self.session.get(Client, client_id)
+        if client is None:
+            raise ValueError(f"Client not found: {client_id}")
+
+        quarter_ids = [
+            quarter.id
+            for quarter in self.session.exec(select(ClientQuarter).where(ClientQuarter.client_id == client_id))
+            if quarter.id is not None
+        ]
+        counterparty_ids = [
+            counterparty.id
+            for counterparty in self.session.exec(select(Counterparty).where(Counterparty.client_id == client_id))
+            if counterparty.id is not None
+        ]
+        template_ids = [
+            template.id
+            for template in self.session.exec(
+                select(Template).where(
+                    (Template.client_id == client_id)
+                    | (Template.client_quarter_id.in_(quarter_ids) if quarter_ids else False)
+                )
+            )
+            if template.id is not None
+        ]
+        document_job_ids = [
+            job.id
+            for job in self.session.exec(
+                select(DocumentJob).where(
+                    (DocumentJob.client_quarter_id.in_(quarter_ids) if quarter_ids else False)
+                    | (DocumentJob.counterparty_id.in_(counterparty_ids) if counterparty_ids else False)
+                )
+            )
+            if job.id is not None
+        ]
+
+        if document_job_ids:
+            self.session.exec(delete(GeneratedDocument).where(GeneratedDocument.document_job_id.in_(document_job_ids)))
+        if counterparty_ids:
+            self.session.exec(delete(GeneratedDocument).where(GeneratedDocument.counterparty_id.in_(counterparty_ids)))
+            self.session.exec(delete(CounterpartyField).where(CounterpartyField.counterparty_id.in_(counterparty_ids)))
+        if quarter_ids:
+            self.session.exec(delete(EmailMessage).where(EmailMessage.client_quarter_id.in_(quarter_ids)))
+            self.session.exec(delete(EmailBatch).where(EmailBatch.client_quarter_id.in_(quarter_ids)))
+            self.session.exec(delete(WorkflowRun).where(WorkflowRun.client_quarter_id.in_(quarter_ids)))
+            self.session.exec(delete(VariableMapping).where(VariableMapping.client_quarter_id.in_(quarter_ids)))
+            self.session.exec(delete(ExcelImport).where(ExcelImport.client_quarter_id.in_(quarter_ids)))
+            self.session.exec(delete(AuditEvent).where(AuditEvent.client_quarter_id.in_(quarter_ids)))
+        if counterparty_ids:
+            self.session.exec(delete(EmailMessage).where(EmailMessage.counterparty_id.in_(counterparty_ids)))
+            self.session.exec(delete(DocumentJob).where(DocumentJob.counterparty_id.in_(counterparty_ids)))
+            self.session.exec(delete(AuditEvent).where(AuditEvent.counterparty_id.in_(counterparty_ids)))
+        if document_job_ids:
+            self.session.exec(delete(DocumentJob).where(DocumentJob.id.in_(document_job_ids)))
+        if template_ids:
+            self.session.exec(delete(TemplateVariable).where(TemplateVariable.template_id.in_(template_ids)))
+            self.session.exec(delete(Template).where(Template.id.in_(template_ids)))
+        if counterparty_ids:
+            self.session.exec(delete(Counterparty).where(Counterparty.id.in_(counterparty_ids)))
+        if quarter_ids:
+            self.session.exec(delete(ClientQuarter).where(ClientQuarter.id.in_(quarter_ids)))
+
+        self.session.delete(client)
+        self.session.commit()
+        return client.name, quarter_ids
+
 
 class ImportDAO:
     def __init__(self, session: Session) -> None:
@@ -358,6 +424,20 @@ class WorkflowDAO:
         message.status = "sent"
         message.smtp_message_id = smtp_message_id
         message.gmail_thread_id = gmail_thread_id
+        message.sent_at = utc_now_text()
+        message.error = ""
+        self.session.add(message)
+        self.session.commit()
+        self.session.refresh(message)
+        return message
+
+    def mark_email_preview_sent(self, message_id: int, smtp_message_id: str = "") -> EmailMessage:
+        message = self.session.get(EmailMessage, message_id)
+        if message is None:
+            raise ValueError(f"Email message not found: {message_id}")
+        message.status = "preview_sent"
+        message.smtp_message_id = smtp_message_id or f"preview-{message_id}"
+        message.gmail_thread_id = ""
         message.sent_at = utc_now_text()
         message.error = ""
         self.session.add(message)
