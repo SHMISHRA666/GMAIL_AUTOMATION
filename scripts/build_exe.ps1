@@ -58,18 +58,55 @@ function Test-UiStartup {
     param(
         [Parameter(Mandatory = $true)]
         [string]$ExePath,
-        [Parameter(Mandatory = $true)]
-        [string]$Argument,
+        [Parameter(Mandatory = $false)]
+        [string]$Argument = "",
         [Parameter(Mandatory = $true)]
         [string]$Name
     )
-    $process = Start-Process -FilePath $ExePath -ArgumentList $Argument -PassThru
+    if ([string]::IsNullOrWhiteSpace($Argument)) {
+        $process = Start-Process -FilePath $ExePath -PassThru
+    }
+    else {
+        $process = Start-Process -FilePath $ExePath -ArgumentList $Argument -PassThru
+    }
     Start-Sleep -Seconds 8
     if ($process.HasExited) {
         throw "$Name exited early with code $($process.ExitCode)"
     }
     Stop-Process -Id $process.Id -Force
     Write-Host "$Name startup check passed."
+}
+
+function New-PyInstallerArgs {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+        [Parameter(Mandatory = $true)]
+        [string]$WindowMode
+    )
+    return @(
+        "-m", "PyInstaller",
+        "--noconfirm",
+        "--onefile",
+        "--specpath", "build",
+        "--name", $Name,
+        $WindowMode,
+        "--collect-data", "flet",
+        "--hidden-import", "win32com",
+        "--hidden-import", "win32com.client",
+        "--hidden-import", "flet_desktop",
+        "--exclude-module", "IPython",
+        "--exclude-module", "matplotlib",
+        "--exclude-module", "jedi",
+        "--exclude-module", "parso",
+        "--exclude-module", "pytest",
+        "--exclude-module", "tkinter",
+        "--add-data", ((Join-Path $repoRoot "Balance confirmation letter.docx") + ";gmail_automation/resources"),
+        "--add-data", ((Join-Path $repoRoot "On Vendor letter.docx") + ";gmail_automation/resources"),
+        "--add-data", ((Join-Path $repoRoot "Authorisation for Direct Balance Confirmation.pdf") + ";gmail_automation/resources"),
+        "--add-data", ($fletArtifactPath + ";flet_desktop/app"),
+        "run_gmail_automation.py"
+    )
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -118,44 +155,40 @@ if (-not (Test-Path $fletArtifactPath)) {
     throw "Failed to create bundled Flet artifact: $fletArtifactPath"
 }
 
-$pyInstallerArgs = @(
-    "-m", "PyInstaller",
-    "--noconfirm",
-    "--onefile",
-    "--specpath", "build",
-    "--name", "GmailConfirmationAutomation",
-    "--console",
-    "--collect-data", "flet",
-    "--collect-data", "gmail_automation",
-    "--hidden-import", "win32com",
-    "--hidden-import", "win32com.client",
-    "--add-data", ((Join-Path $repoRoot "Balance confirmation letter.docx") + ";gmail_automation/resources"),
-    "--add-data", ((Join-Path $repoRoot "On Vendor letter.docx") + ";gmail_automation/resources"),
-    "--add-data", ((Join-Path $repoRoot "Authorisation for Direct Balance Confirmation.pdf") + ";gmail_automation/resources"),
-    "--add-data", ($fletArtifactPath + ";flet_desktop/app"),
-    "run_gmail_automation.py"
-)
+$windowedExePath = Join-Path $repoRoot "dist\GmailConfirmationAutomation.exe"
+$consoleExePath = Join-Path $repoRoot "dist\GmailConfirmationAutomationConsole.exe"
+foreach ($path in @($windowedExePath, $consoleExePath)) {
+    if (Test-Path $path) {
+        Remove-Item $path -Force
+    }
+}
 
+$windowedArgs = New-PyInstallerArgs -Name "GmailConfirmationAutomation" -WindowMode "--windowed"
+$consoleArgs = New-PyInstallerArgs -Name "GmailConfirmationAutomationConsole" -WindowMode "--console"
 if (-not $NoClean) {
-    $pyInstallerArgs += "--clean"
+    $windowedArgs += "--clean"
 }
 
-Write-Host "Building standalone executable with PyInstaller..."
-$exePath = Join-Path $repoRoot "dist\GmailConfirmationAutomation.exe"
-if (Test-Path $exePath) {
-    Remove-Item $exePath -Force
-}
-Invoke-Python -Args $pyInstallerArgs
+Write-Host "Building standalone windowed launcher (default)..."
+Invoke-Python -Args $windowedArgs
+Write-Host "Building standalone console launcher..."
+Invoke-Python -Args $consoleArgs
 
-if (-not (Test-Path $exePath)) {
-    throw "Build finished but executable not found: $exePath"
+if (-not (Test-Path $windowedExePath)) {
+    throw "Build finished but windowed executable not found: $windowedExePath"
+}
+if (-not (Test-Path $consoleExePath)) {
+    throw "Build finished but console executable not found: $consoleExePath"
 }
 
 if (-not $SkipSmokeTest) {
-    Write-Host "Running smoke test: GmailConfirmationAutomation.exe --help"
-    $helpOutput = Invoke-Executable -ExePath $exePath -Args @("--help")
+    Write-Host "Running smoke test: GmailConfirmationAutomationConsole.exe --help"
+    $helpOutput = Invoke-Executable -ExePath $consoleExePath -Args @("--help")
     if ($helpOutput -notmatch "--modern-ui") {
         throw "Build validation failed: --modern-ui is missing from executable help."
+    }
+    if ($helpOutput -notmatch "--console") {
+        throw "Build validation failed: --console is missing from executable help."
     }
 }
 
@@ -165,13 +198,13 @@ if ($ThoroughValidate) {
     New-Item -ItemType Directory -Path $tempRoot | Out-Null
     Push-Location $tempRoot
     try {
-        Invoke-Executable -ExePath $exePath -Args @("--init-config") | Out-Null
+        Invoke-Executable -ExePath $consoleExePath -Args @("--init-config") | Out-Null
         $configPath = Join-Path $tempRoot "config.json"
         if (-not (Test-Path $configPath)) {
             throw "Thorough validation failed: config.json was not created."
         }
 
-        Invoke-Executable -ExePath $exePath -Args @("--init-db") | Out-Null
+        Invoke-Executable -ExePath $consoleExePath -Args @("--init-db") | Out-Null
         $dbPath = Join-Path $env:APPDATA "GmailAutomation\compliance.db"
         if (-not (Test-Path $dbPath)) {
             throw "Thorough validation failed: database file not found at $dbPath"
@@ -179,14 +212,15 @@ if ($ThoroughValidate) {
 
         $validationMaster = Join-Path $repoRoot $ValidationMasterPath
         if (Test-Path $validationMaster) {
-            Invoke-Executable -ExePath $exePath -Args @("--master", $validationMaster, "--mode", "validate", "--config", $configPath) | Out-Null
+            Invoke-Executable -ExePath $consoleExePath -Args @("--master", $validationMaster, "--mode", "validate", "--config", $configPath) | Out-Null
         }
         else {
             Write-Host "Validation workbook not found, skipping --mode validate: $validationMaster"
         }
 
-        Test-UiStartup -ExePath $exePath -Argument "--ui" -Name "Legacy UI"
-        Test-UiStartup -ExePath $exePath -Argument "--modern-ui" -Name "Modern UI"
+        Test-UiStartup -ExePath $windowedExePath -Name "Default launch (modern UI)"
+        Test-UiStartup -ExePath $windowedExePath -Argument "--ui" -Name "Legacy UI"
+        Test-UiStartup -ExePath $windowedExePath -Argument "--modern-ui" -Name "Modern UI"
     }
     finally {
         Pop-Location
@@ -195,4 +229,5 @@ if ($ThoroughValidate) {
     Write-Host "Thorough runtime validation passed."
 }
 
-Write-Host "Build complete: $exePath"
+Write-Host "Build complete (windowed): $windowedExePath"
+Write-Host "Build complete (console):  $consoleExePath"

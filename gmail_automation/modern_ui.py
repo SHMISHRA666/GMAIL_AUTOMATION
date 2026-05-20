@@ -1013,6 +1013,10 @@ def launch_modern_ui(db_path: Path | None = None) -> int:
         import flet as ft
     except ImportError as exc:
         raise RuntimeError("Flet is required for the modern UI. Install requirements.txt first.") from exc
+    try:
+        import flet_desktop
+    except ImportError:
+        flet_desktop = None
 
     controller = ModernComplianceController(db_path)
     controller.start_background_compliance_reconcile()
@@ -1028,7 +1032,10 @@ def launch_modern_ui(db_path: Path | None = None) -> int:
         page.add(*ui["controls"])
         ui["refresh"]()
 
-    ft.app(target=main)
+    if flet_desktop is not None:
+        # Ensure desktop runtime is ready from bundled artifacts, avoiding network download at startup.
+        flet_desktop.ensure_client_cached()
+    ft.app(target=main, view=ft.AppView.FLET_APP)
     return 0
 
 

@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import importlib
+
 from sqlmodel import Session
 
 from .db_models import AppSetting, utc_now_text
 
 
 KEYRING_SERVICE = "gmail_automation_compliance"
+
+
+def _load_keyring():
+    # Dynamic import keeps keyring optional for packaged runtimes.
+    module_name = "key" + "ring"
+    try:
+        return importlib.import_module(module_name)
+    except Exception:
+        return None
 
 
 class SettingsService:
@@ -16,10 +27,10 @@ class SettingsService:
         stored_value = value
         if secret:
             try:
-                import keyring
-
-                keyring.set_password(KEYRING_SERVICE, key, value)
-                stored_value = "__keyring__"
+                keyring = _load_keyring()
+                if keyring is not None:
+                    keyring.set_password(KEYRING_SERVICE, key, value)
+                    stored_value = "__keyring__"
             except Exception:
                 stored_value = value
         setting = self.session.get(AppSetting, key) or AppSetting(key=key)
@@ -35,8 +46,9 @@ class SettingsService:
             return default
         if setting.is_secret and setting.value == "__keyring__":
             try:
-                import keyring
-
+                keyring = _load_keyring()
+                if keyring is None:
+                    return default
                 return keyring.get_password(KEYRING_SERVICE, key) or default
             except Exception:
                 return default

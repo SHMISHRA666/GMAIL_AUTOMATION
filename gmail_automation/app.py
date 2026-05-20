@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -188,13 +190,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--init-config", action="store_true", help="Write a sample config.json and exit")
     parser.add_argument("--ui", action="store_true", help="Launch the desktop batch approval UI")
     parser.add_argument("--modern-ui", action="store_true", help="Launch the modern DB-backed compliance UI")
+    parser.add_argument("--console", action="store_true", help="Relaunch in console mode for CLI output")
     parser.add_argument("--init-db", action="store_true", help="Initialize the local SQLite compliance database and exit")
     return parser
 
 
+def _relaunch_console_mode(current_args: list[str]) -> int:
+    if not getattr(sys, "frozen", False):
+        print("Console mode handoff is only available from the packaged executable.")
+        return 1
+    current_exe = Path(sys.executable).resolve()
+    if current_exe.stem.endswith("Console"):
+        return 0
+    console_exe = current_exe.with_name(f"{current_exe.stem}Console.exe")
+    if not console_exe.exists():
+        print(f"Console executable not found: {console_exe}")
+        return 1
+    forward_args = [arg for arg in current_args if arg != "--console"]
+    subprocess.Popen([str(console_exe), *forward_args], cwd=str(current_exe.parent))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    parsed_argv = list(argv) if argv is not None else None
+    args = parser.parse_args(parsed_argv)
+    current_args = parsed_argv if parsed_argv is not None else list(sys.argv[1:])
+    launched_without_args = (len(parsed_argv) == 0) if parsed_argv is not None else (len(sys.argv) <= 1)
+    if args.console:
+        return _relaunch_console_mode(current_args)
     config_path = Path(args.config).resolve()
     if args.init_db:
         from .db import default_database_path, init_db
@@ -203,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
         init_db(db_path)
         print(f"Initialized database: {db_path}")
         return 0
-    if args.modern_ui:
+    if args.modern_ui or launched_without_args:
         from .modern_ui import launch_modern_ui
 
         return launch_modern_ui()

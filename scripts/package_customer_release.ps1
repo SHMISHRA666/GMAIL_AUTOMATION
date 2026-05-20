@@ -25,6 +25,7 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $repoRoot
 
 $resolvedExePath = Join-Path $repoRoot $ExePath
+$resolvedConsoleExePath = Join-Path $repoRoot "dist\GmailConfirmationAutomationConsole.exe"
 if (-not (Test-Path $resolvedExePath)) {
     if ($BuildIfMissing) {
         Write-Host "Executable not found. Building first..."
@@ -46,8 +47,11 @@ if ($ForceRebuild) {
 if (-not (Test-Path $resolvedExePath)) {
     throw "Executable not found: $resolvedExePath"
 }
+if (-not (Test-Path $resolvedConsoleExePath)) {
+    throw "Console executable not found: $resolvedConsoleExePath"
+}
 
-$helpOutput = (& $resolvedExePath --help 2>&1 | Out-String)
+$helpOutput = (& $resolvedConsoleExePath --help 2>&1 | Out-String)
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to run executable --help before packaging."
 }
@@ -82,12 +86,14 @@ New-Item -ItemType Directory -Path $releaseDir | Out-Null
 
 $exeTargetPath = Join-Path $releaseDir "GmailConfirmationAutomation.exe"
 Copy-Item -Path $resolvedExePath -Destination $exeTargetPath -Force
+$consoleExeTargetPath = Join-Path $releaseDir "GmailConfirmationAutomationConsole.exe"
+Copy-Item -Path $resolvedConsoleExePath -Destination $consoleExeTargetPath -Force
 
 $tempConfigDir = Join-Path $env:TEMP ("gmail_auto_release_" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $tempConfigDir | Out-Null
 try {
     Push-Location $tempConfigDir
-    Invoke-Executable -Path $exeTargetPath -Args @("--init-config")
+    Invoke-Executable -Path $consoleExeTargetPath -Args @("--init-config")
     Pop-Location
 
     $generatedConfigPath = Join-Path $tempConfigDir "config.json"
@@ -121,7 +127,13 @@ Useful commands:
 - Generate documents without sending:
   .\GmailConfirmationAutomation.exe --master "Information for External Balance Confirmations (1).xlsx" --mode preview
 
-- Open desktop UI:
+- Open modern compliance UI (default):
+  .\GmailConfirmationAutomation.exe
+
+- Open console mode for CLI output:
+  .\GmailConfirmationAutomation.exe --console --mode validate
+
+- Open legacy desktop UI:
   .\GmailConfirmationAutomation.exe --ui
 
 - Open modern compliance UI:

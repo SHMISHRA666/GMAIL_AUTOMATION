@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import types
+import sys
 from pathlib import Path
 
 import pytest
 from openpyxl import Workbook
 from sqlmodel import Session, select
 
+from gmail_automation import app as cli_app
+from gmail_automation import modern_ui as modern_ui_module
 from gmail_automation.dao import ImportDAO, TemplateDAO, WorkflowDAO
 from gmail_automation.db import init_db
 from gmail_automation.db_models import Client, ClientQuarter, Counterparty, CounterpartyField, DocumentJob, EmailMessage, GeneratedDocument, Template
@@ -14,6 +18,91 @@ from gmail_automation.liquid_utils import extract_liquid_variables, render_liqui
 from gmail_automation.modern_ui import ModernComplianceController, _attach_file_picker, _load_smtp_password, build_modern_ui_controls
 from gmail_automation.services import ClientService, DashboardService, ImportService, TemplateService, WorkflowService
 from gmail_automation.settings_store import SettingsService
+
+
+def test_cli_main_defaults_to_modern_ui_without_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
+    called: dict[str, bool] = {"launched": False}
+
+    def _launch_modern_ui(_db_path=None) -> int:
+        called["launched"] = True
+        return 0
+
+    monkeypatch.setitem(sys.modules, "gmail_automation.modern_ui", types.SimpleNamespace(launch_modern_ui=_launch_modern_ui))
+    result = cli_app.main([])
+
+    assert result == 0
+    assert called["launched"] is True
+
+
+def test_cli_main_init_config_does_not_auto_launch_modern_ui(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    called: dict[str, bool] = {"launched": False}
+    config_path = tmp_path / "config.json"
+
+    def _launch_modern_ui(_db_path=None) -> int:
+        called["launched"] = True
+        return 0
+
+    monkeypatch.setitem(sys.modules, "gmail_automation.modern_ui", types.SimpleNamespace(launch_modern_ui=_launch_modern_ui))
+    result = cli_app.main(["--init-config", "--config", str(config_path)])
+
+    assert result == 0
+    assert config_path.exists()
+    assert called["launched"] is False
+
+
+def test_cli_console_flag_handoffs_to_console_executable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    launcher_exe = tmp_path / "GmailConfirmationAutomation.exe"
+    console_exe = tmp_path / "GmailConfirmationAutomationConsole.exe"
+    launcher_exe.write_bytes(b"launcher")
+    console_exe.write_bytes(b"console")
+    spawned: dict[str, object] = {}
+
+    def _fake_popen(cmd, cwd=None):
+        spawned["cmd"] = cmd
+        spawned["cwd"] = cwd
+        return types.SimpleNamespace()
+
+    monkeypatch.setattr(cli_app.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(cli_app.sys, "executable", str(launcher_exe), raising=False)
+    monkeypatch.setattr(cli_app.subprocess, "Popen", _fake_popen)
+
+    result = cli_app.main(["--console", "--mode", "validate"])
+
+    assert result == 0
+    assert spawned["cmd"] == [str(console_exe), "--mode", "validate"]
+    assert spawned["cwd"] == str(tmp_path)
+
+
+def test_modern_ui_launch_forces_desktop_view_and_uses_cached_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    state: dict[str, object] = {"ensure_called": False, "view": None}
+
+    class DummyController:
+        def __init__(self, _db_path=None) -> None:
+            pass
+
+        def start_background_compliance_reconcile(self) -> None:
+            return None
+
+    def _ensure_client_cached():
+        state["ensure_called"] = True
+        return "cached"
+
+    def _app(*, target=None, view=None):
+        state["view"] = view
+        assert callable(target)
+        return None
+
+    dummy_ft = types.SimpleNamespace(AppView=types.SimpleNamespace(FLET_APP="desktop"), app=_app)
+    dummy_flet_desktop = types.SimpleNamespace(ensure_client_cached=_ensure_client_cached)
+    monkeypatch.setitem(sys.modules, "flet", dummy_ft)
+    monkeypatch.setitem(sys.modules, "flet_desktop", dummy_flet_desktop)
+    monkeypatch.setattr(modern_ui_module, "ModernComplianceController", DummyController)
+
+    result = modern_ui_module.launch_modern_ui()
+
+    assert result == 0
+    assert state["ensure_called"] is True
+    assert state["view"] == "desktop"
 
 
 def test_liquid_variable_extraction_and_strict_rendering() -> None:
