@@ -4,12 +4,25 @@ import shutil
 import threading
 from pathlib import Path
 
+from sqlalchemy import delete
 from sqlmodel import Session, select
 
 from .config import load_config
 from .dao import ClientDAO
 from .db import default_database_path, init_db
-from .db_models import Client, ClientQuarter, Counterparty, DocumentJob, EmailMessage, ExcelImport, GeneratedDocument, Template, TemplateVariable
+from .db_models import (
+    Client,
+    ClientQuarter,
+    Counterparty,
+    CounterpartyField,
+    DocumentJob,
+    EmailMessage,
+    ExcelImport,
+    GeneratedDocument,
+    Template,
+    TemplateVariable,
+    utc_now_text,
+)
 from .docx_utils import extract_docx_text
 from .errors import ValidationError
 from .mail_sender import create_mail_sender
@@ -536,6 +549,210 @@ class ModernComplianceController:
                 )
             return rows
 
+    def counterparty_form_payload(self, client_id: int, client_quarter_id: int, counterparty_id: int | None = None) -> dict:
+        with Session(self.engine) as session:
+            quarter = self._scoped_client_quarter(session, client_id, client_quarter_id)
+            schema_columns = self._counterparty_schema_columns(session, quarter.id)
+            values = {column: "" for column in schema_columns}
+            if counterparty_id is None:
+                return {
+                    "client_id": quarter.client_id,
+                    "client_quarter_id": quarter.id,
+                    "counterparty_id": None,
+                    "columns": schema_columns,
+                    "values": values,
+                }
+
+            counterparty = self._scoped_counterparty(session, quarter.id, counterparty_id)
+            existing_fields = {
+                row.field_name: row.field_value
+                for row in session.exec(select(CounterpartyField).where(CounterpartyField.counterparty_id == counterparty.id))
+            }
+            for key in existing_fields:
+                if key not in values:
+                    values[key] = ""
+            values.update(existing_fields)
+            if not values.get("Party Type"):
+                values["Party Type"] = counterparty.party_type or ""
+            if not values.get("Party Name"):
+                values["Party Name"] = counterparty.party_name or ""
+            if not values.get("Email To(Address)"):
+                values["Email To(Address)"] = counterparty.email or ""
+            if not values.get("Balance"):
+                values["Balance"] = counterparty.balance or ""
+            columns = list(schema_columns)
+            for key in values:
+                if key not in columns:
+                    columns.append(key)
+            return {
+                "client_id": quarter.client_id,
+                "client_quarter_id": quarter.id,
+                "counterparty_id": counterparty.id,
+                "columns": columns,
+                "values": values,
+            }
+
+    def create_counterparty(self, client_id: int, client_quarter_id: int, values: dict[str, str]) -> str:
+        with Session(self.engine) as session:
+            quarter = self._scoped_client_quarter(session, client_id, client_quarter_id)
+            columns = self._counterparty_schema_columns(session, quarter.id)
+            normalized_values = self._normalize_counterparty_values(values, columns)
+            next_row_number = self._next_manual_row_number(session, quarter.id)
+            counterparty = Counterparty(
+                client_id=quarter.client_id,
+                client_quarter_id=quarter.id,
+                excel_import_id=self._latest_excel_import_id(session, quarter.id),
+                source_sheet="Manual",
+                source_row_number=next_row_number,
+                source_row_key=f"manual-{quarter.id}-{next_row_number}",
+                party_type=normalized_values.get("Party Type", ""),
+                party_name=normalized_values.get("Party Name", ""),
+                email=normalized_values.get("Email To(Address)", ""),
+                balance=normalized_values.get("Balance", ""),
+                status="non_compliant",
+            )
+            session.add(counterparty)
+            session.flush()
+            assert counterparty.id is not None
+            for column in columns:
+                session.add(
+                    CounterpartyField(
+                        counterparty_id=counterparty.id,
+                        field_name=column,
+                        field_value=normalized_values.get(column, ""),
+                    )
+                )
+            session.commit()
+            return f"Added counterparty: {counterparty.party_name or '(blank)'}."
+
+    def update_counterparty(self, client_id: int, client_quarter_id: int, counterparty_id: int, values: dict[str, str]) -> str:
+        with Session(self.engine) as session:
+            quarter = self._scoped_client_quarter(session, client_id, client_quarter_id)
+            counterparty = self._scoped_counterparty(session, quarter.id, counterparty_id)
+            columns = self._counterparty_schema_columns(session, quarter.id)
+            existing_fields = {
+                row.field_name: row.field_value
+                for row in session.exec(select(CounterpartyField).where(CounterpartyField.counterparty_id == counterparty.id))
+            }
+            for key in existing_fields:
+                if key not in columns:
+                    columns.append(key)
+            normalized_values = self._normalize_counterparty_values(values, columns)
+            counterparty.party_type = normalized_values.get("Party Type", counterparty.party_type)
+            counterparty.party_name = normalized_values.get("Party Name", counterparty.party_name)
+            counterparty.email = normalized_values.get("Email To(Address)", counterparty.email)
+            counterparty.balance = normalized_values.get("Balance", counterparty.balance)
+            counterparty.status = "non_compliant"
+            counterparty.updated_at = utc_now_text()
+            session.add(counterparty)
+            job_ids = [
+                job.id
+                for job in session.exec(
+                    select(DocumentJob).where(
+                        DocumentJob.client_quarter_id == quarter.id,
+                        DocumentJob.counterparty_id == counterparty.id,
+                    )
+                )
+                if job.id is not None
+            ]
+            if job_ids:
+                session.exec(delete(GeneratedDocument).where(GeneratedDocument.document_job_id.in_(job_ids)))
+                session.exec(delete(DocumentJob).where(DocumentJob.id.in_(job_ids)))
+            session.exec(delete(GeneratedDocument).where(GeneratedDocument.counterparty_id == counterparty.id))
+            session.exec(delete(EmailMessage).where(EmailMessage.counterparty_id == counterparty.id))
+            session.exec(delete(CounterpartyField).where(CounterpartyField.counterparty_id == counterparty.id))
+            for column in columns:
+                session.add(
+                    CounterpartyField(
+                        counterparty_id=counterparty.id,
+                        field_name=column,
+                        field_value=normalized_values.get(column, ""),
+                    )
+                )
+            session.commit()
+            return f"Updated counterparty: {counterparty.party_name or '(blank)'}."
+
+    def delete_counterparty(self, client_id: int, client_quarter_id: int, counterparty_id: int) -> str:
+        with Session(self.engine) as session:
+            quarter = self._scoped_client_quarter(session, client_id, client_quarter_id)
+            counterparty = self._scoped_counterparty(session, quarter.id, counterparty_id)
+            counterparty_name = counterparty.party_name or "(blank)"
+            job_ids = [
+                job.id
+                for job in session.exec(
+                    select(DocumentJob).where(
+                        DocumentJob.client_quarter_id == quarter.id,
+                        DocumentJob.counterparty_id == counterparty.id,
+                    )
+                )
+                if job.id is not None
+            ]
+            if job_ids:
+                session.exec(delete(GeneratedDocument).where(GeneratedDocument.document_job_id.in_(job_ids)))
+                session.exec(delete(DocumentJob).where(DocumentJob.id.in_(job_ids)))
+            session.exec(delete(GeneratedDocument).where(GeneratedDocument.counterparty_id == counterparty.id))
+            session.exec(delete(EmailMessage).where(EmailMessage.counterparty_id == counterparty.id))
+            session.exec(delete(CounterpartyField).where(CounterpartyField.counterparty_id == counterparty.id))
+            session.delete(counterparty)
+            session.commit()
+            return f"Deleted counterparty: {counterparty_name}."
+
+    def _scoped_client_quarter(self, session: Session, client_id: int, client_quarter_id: int) -> ClientQuarter:
+        quarter = session.get(ClientQuarter, client_quarter_id)
+        if quarter is None:
+            raise ValueError("Select a valid quarter first.")
+        if quarter.client_id != client_id:
+            raise ValueError("Selected quarter does not belong to this client.")
+        return quarter
+
+    def _scoped_counterparty(self, session: Session, client_quarter_id: int, counterparty_id: int) -> Counterparty:
+        counterparty = session.get(Counterparty, counterparty_id)
+        if counterparty is None or counterparty.client_quarter_id != client_quarter_id:
+            raise ValueError("Selected counterparty does not belong to the active client quarter.")
+        return counterparty
+
+    def _counterparty_schema_columns(self, session: Session, client_quarter_id: int) -> list[str]:
+        imports = list(
+            session.exec(
+                select(ExcelImport)
+                .where(ExcelImport.client_quarter_id == client_quarter_id)
+                .order_by(ExcelImport.imported_at.desc(), ExcelImport.id.desc())
+            )
+        )
+        if not imports:
+            raise ValueError("Import Excel for this quarter before adding or editing counterparties.")
+        latest_import = imports[0]
+        columns = list(latest_import.detected_columns or [])
+        for required in ("Party Type", "Party Name", "Email To(Address)", "Balance"):
+            if required not in columns:
+                columns.append(required)
+        return columns
+
+    def _normalize_counterparty_values(self, values: dict[str, str], columns: list[str]) -> dict[str, str]:
+        normalized_values = {column: str(values.get(column, "") or "").strip() for column in columns}
+        if not normalized_values.get("Party Name"):
+            raise ValueError("Party Name is required.")
+        if not normalized_values.get("Email To(Address)"):
+            raise ValueError("Email To(Address) is required.")
+        return normalized_values
+
+    def _next_manual_row_number(self, session: Session, client_quarter_id: int) -> int:
+        row_numbers = list(
+            session.exec(
+                select(Counterparty.source_row_number).where(Counterparty.client_quarter_id == client_quarter_id)
+            )
+        )
+        max_row = max((int(value) for value in row_numbers if value is not None), default=1)
+        return max_row + 1
+
+    def _latest_excel_import_id(self, session: Session, client_quarter_id: int) -> int | None:
+        latest_import = session.exec(
+            select(ExcelImport)
+            .where(ExcelImport.client_quarter_id == client_quarter_id)
+            .order_by(ExcelImport.imported_at.desc(), ExcelImport.id.desc())
+        ).first()
+        return latest_import.id if latest_import is not None else None
+
     def run_generation(self, client_quarter_id: int) -> str:
         with Session(self.engine) as session:
             workflow = WorkflowService(session, output_root=self.db_path.parent / "generated")
@@ -846,6 +1063,10 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
     compliance_row_details = ft.Column(spacing=8)
     selected_counterparty_ids: set[int] = set()
     visible_counterparty_rows: list[dict] = []
+    counterparty_edit_mode = {"value": "create"}
+    counterparty_edit_target_id = {"value": None}
+    counterparty_edit_columns: list[str] = []
+    counterparty_edit_fields: dict[str, object] = {}
     row_page_index = {"value": 0}
     row_page_size = ft.Dropdown(
         label="Rows per page",
@@ -1246,6 +1467,20 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
             raise ValueError("Select rows first, or use Select Current Page / Select All / Select Next Batch.")
         return set(selected_counterparty_ids)
 
+    def selected_row_for_edit() -> dict:
+        selected_rows = [row for row in visible_counterparty_rows if row["counterparty_id"] in selected_counterparty_ids]
+        if len(selected_rows) != 1:
+            raise ValueError("Select exactly one row to edit.")
+        return selected_rows[0]
+
+    def selected_quarter_client_id() -> int:
+        quarter_id = selected_quarter_id()
+        with Session(controller.engine) as session:
+            quarter = session.get(ClientQuarter, quarter_id)
+            if quarter is None:
+                raise ValueError("Select a valid quarter first.")
+            return int(quarter.client_id)
+
     def current_row_page_size() -> int:
         try:
             return max(1, int(row_page_size.value or "20"))
@@ -1279,6 +1514,97 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
         end = min(start + page_size, total)
         return visible_counterparty_rows[start:end]
 
+    def close_counterparty_editor() -> None:
+        if page is None:
+            return
+        try:
+            page.pop_dialog()
+        except Exception:
+            try:
+                if page.dialog is not None:
+                    page.dialog.open = False
+                    page.update()
+            except Exception:
+                pass
+
+    def open_counterparty_editor(mode: str, counterparty_id: int | None = None) -> str:
+        if page is None:
+            raise ValueError("Counterparty editor is available only in interactive UI mode.")
+        client_id = selected_quarter_client_id()
+        quarter_id = selected_quarter_id()
+        payload = controller.counterparty_form_payload(client_id, quarter_id, counterparty_id=counterparty_id)
+        columns = list(payload["columns"])
+        values = payload["values"]
+        counterparty_edit_mode["value"] = mode
+        counterparty_edit_target_id["value"] = counterparty_id
+        counterparty_edit_columns[:] = columns
+        counterparty_edit_fields.clear()
+        for column in columns:
+            counterparty_edit_fields[column] = ft.TextField(label=column, value=str(values.get(column, "")), expand=True)
+
+        def save_editor() -> str:
+            payload_values = {column: str(counterparty_edit_fields[column].value or "").strip() for column in counterparty_edit_columns}
+            if counterparty_edit_mode["value"] == "edit":
+                message = controller.update_counterparty(client_id, quarter_id, int(counterparty_edit_target_id["value"]), payload_values)
+            else:
+                message = controller.create_counterparty(client_id, quarter_id, payload_values)
+            close_counterparty_editor()
+            selected_counterparty_ids.clear()
+            refresh_compliance_rows()
+            return message
+
+        def delete_editor() -> str:
+            if counterparty_edit_mode["value"] != "edit" or counterparty_edit_target_id["value"] is None:
+                raise ValueError("Select an existing row before deleting.")
+            message = controller.delete_counterparty(client_id, quarter_id, int(counterparty_edit_target_id["value"]))
+            close_counterparty_editor()
+            selected_counterparty_ids.clear()
+            refresh_compliance_rows()
+            return message
+
+        dialog_title = "Edit Counterparty" if mode == "edit" else "Add Counterparty"
+        actions = [
+            ft.TextButton("Cancel", on_click=lambda _event: close_counterparty_editor()),
+            ft.FilledButton("Save", on_click=lambda _event: run_action(save_editor)),
+        ]
+        if mode == "edit":
+            actions.insert(
+                1,
+                ft.OutlinedButton(
+                    "Delete",
+                    on_click=lambda _event: run_action(delete_editor),
+                    style=ft.ButtonStyle(color=ft.Colors.RED_600),
+                ),
+            )
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(dialog_title),
+            content=ft.Container(
+                width=820,
+                height=520,
+                content=ft.Column([counterparty_edit_fields[column] for column in columns], scroll=ft.ScrollMode.AUTO),
+            ),
+            actions=actions,
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        try:
+            page.show_dialog(dialog)
+        except Exception:
+            page.dialog = dialog
+            dialog.open = True
+            page.update()
+        return f"Opened {dialog_title.lower()}."
+
+    def create_counterparty_row() -> str:
+        return open_counterparty_editor("create")
+
+    def edit_selected_counterparty_row() -> str:
+        selected = selected_row_for_edit()
+        return open_counterparty_editor("edit", int(selected["counterparty_id"]))
+
+    def edit_counterparty_row(counterparty_id: int) -> None:
+        run_action(lambda: open_counterparty_editor("edit", counterparty_id))
+
     def render_compliance_rows() -> None:
         compliance_row_details.controls = [
             ft.Row([row_page_size, previous_row_page_button, next_row_page_button, row_page_status], wrap=True),
@@ -1288,6 +1614,7 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
                 selected_counterparty_ids,
                 toggle_counterparty_selection,
                 preview_generated_document_from_row,
+                edit_counterparty_row,
             ),
         ]
         if page is None:
@@ -1326,6 +1653,8 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
         select_current_page_button.disabled = not has_rows
         select_batch_button.disabled = not has_rows
         clear_selection_button.disabled = not has_selection
+        edit_selected_button.disabled = not (has_selection and len(selected_rows) == 1)
+        create_counterparty_button.disabled = not bool(selected_quarter.value)
         regenerate_selected_button.disabled = not (
             has_selection
             and readiness is not None
@@ -2065,6 +2394,8 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
     select_current_page_button = ft.OutlinedButton("Select Current Page", on_click=lambda _event: run_action(select_current_page_counterparties), disabled=True)
     select_batch_button = ft.OutlinedButton("Select Next Batch", on_click=lambda _event: run_action(select_next_counterparty_batch), disabled=True)
     clear_selection_button = ft.OutlinedButton("Clear Selection", on_click=lambda _event: run_action(clear_counterparty_selection), disabled=True)
+    edit_selected_button = ft.OutlinedButton("Edit Selection", on_click=lambda _event: run_action(edit_selected_counterparty_row), disabled=True)
+    create_counterparty_button = ft.FilledButton("Create Counterparty", on_click=lambda _event: run_action(create_counterparty_row), disabled=True)
     regenerate_selected_button = ft.FilledButton("Regenerate Docs for Selection", on_click=lambda _event: run_action(regenerate_selected_documents), disabled=True)
     queue_selected_button = ft.FilledButton("Send Mail for Selection", on_click=lambda _event: run_action(send_or_queue_selected_mail), disabled=True)
     load_generated_docs_button = ft.OutlinedButton("Load Generated Docs", on_click=lambda _event: run_action(load_generated_documents_for_selected_row), disabled=True)
@@ -2411,12 +2742,14 @@ def build_modern_ui_controls(ft, controller: ModernComplianceController, page=No
                                 select_current_page_button,
                                 select_all_button,
                                 select_batch_button,
-                                clear_selection_button,
                             ],
                             wrap=True,
                         ),
                         ft.Row(
                             [
+                                clear_selection_button,
+                                edit_selected_button,
+                                create_counterparty_button,
                                 regenerate_selected_button,
                                 queue_selected_button,
                             ],
@@ -2730,7 +3063,7 @@ def _client_compliance_status(summary) -> str:
     return "non-compliant"
 
 
-def _counterparty_detail_controls(ft, rows: list[dict], selected_ids: set[int], on_toggle, on_doc_preview) -> list:
+def _counterparty_detail_controls(ft, rows: list[dict], selected_ids: set[int], on_toggle, on_doc_preview, on_edit) -> list:
     if not rows:
         return [ft.Text("No Excel rows have been imported for this quarter yet.", selectable=True)]
     table = ft.DataTable(
@@ -2747,10 +3080,21 @@ def _counterparty_detail_controls(ft, rows: list[dict], selected_ids: set[int], 
             ft.DataRow(
                 cells=[
                     ft.DataCell(
-                        ft.Checkbox(
-                            value=row["counterparty_id"] in selected_ids,
-                            data=row["counterparty_id"],
-                            on_change=lambda event: on_toggle(int(event.control.data), bool(event.control.value)),
+                        ft.Row(
+                            [
+                                ft.Checkbox(
+                                    value=row["counterparty_id"] in selected_ids,
+                                    data=row["counterparty_id"],
+                                    on_change=lambda event: on_toggle(int(event.control.data), bool(event.control.value)),
+                                ),
+                                ft.IconButton(
+                                    icon=ft.Icons.EDIT_OUTLINED,
+                                    tooltip="Edit row",
+                                    data=row["counterparty_id"],
+                                    on_click=lambda event: on_edit(int(event.control.data)),
+                                ),
+                            ],
+                            spacing=4,
                         )
                     ),
                     ft.DataCell(

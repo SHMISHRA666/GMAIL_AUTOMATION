@@ -945,6 +945,154 @@ def test_modern_controller_multi_document_save_validates_pdf_and_text_variables(
         controller.close()
 
 
+def test_modern_controller_counterparty_crud_uses_client_schema_and_persists_all_fields(tmp_path: Path) -> None:
+    controller = ModernComplianceController(tmp_path / "modern.db")
+    workbook_path = _sample_workbook(tmp_path)
+    letter_path = tmp_path / "letter.txt"
+    letter_path.write_text("Letter for {{ party_name }}: {{ balance }}", encoding="utf-8")
+    try:
+        created = controller.create_client_record("Purple United")
+        controller.create_quarter(created["id"], "2026-27", "Q1")
+        quarter_id = controller.current_quarter_id_for_client(created["id"])
+        controller.import_workbook(quarter_id, str(workbook_path), client_id=created["id"])
+
+        payload = controller.counterparty_form_payload(created["id"], quarter_id)
+        assert "Custom Ref" in payload["columns"]
+        assert {"Party Type", "Party Name", "Email To(Address)", "Balance"} <= set(payload["columns"])
+
+        add_message = controller.create_counterparty(
+            created["id"],
+            quarter_id,
+            {
+                "Party Type": "Creditor",
+                "Party Name": "Delta Holdings",
+                "Email To(Address)": "delta@example.com",
+                "Balance": "4500",
+                "Custom Ref": "D-9",
+            },
+        )
+        rows_after_add = controller.quarter_counterparty_statuses(quarter_id)
+        delta_row = next(row for row in rows_after_add if row["party_name"] == "Delta Holdings")
+        delta_id = int(delta_row["counterparty_id"])
+        edit_payload = controller.counterparty_form_payload(created["id"], quarter_id, delta_id)
+        controller.save_document_templates(quarter_id, str(letter_path))
+        controller.save_mail_templates(quarter_id, "Confirm {{ party_name }}", "Balance {{ balance }}")
+        assert controller.auto_map_variables(quarter_id) == "Mappings valid."
+        assert controller.regenerate_documents(quarter_id, {delta_id}).startswith("Regenerated")
+        assert controller.queue_and_preview_send_selected(quarter_id, {delta_id}).startswith("Queued 1 selected email(s)")
+
+        update_message = controller.update_counterparty(
+            created["id"],
+            quarter_id,
+            delta_id,
+            {
+                "Party Type": "Debtor",
+                "Party Name": "Delta Revised",
+                "Email To(Address)": "delta.revised@example.com",
+                "Balance": "5000",
+                "Custom Ref": "D-10",
+            },
+        )
+        row_after_update = next(row for row in controller.quarter_counterparty_statuses(quarter_id) if row["counterparty_id"] == delta_id)
+
+        with Session(controller.engine) as session:
+            counterparty = session.get(Counterparty, delta_id)
+            assert counterparty is not None
+            fields = session.exec(select(CounterpartyField).where(CounterpartyField.counterparty_id == delta_id)).all()
+            jobs = session.exec(select(DocumentJob).where(DocumentJob.counterparty_id == delta_id)).all()
+            emails = session.exec(select(EmailMessage).where(EmailMessage.counterparty_id == delta_id)).all()
+
+        assert add_message.startswith("Added counterparty:")
+        assert len(rows_after_add) == 3
+        assert edit_payload["values"]["Custom Ref"] == "D-9"
+        assert update_message.startswith("Updated counterparty:")
+        assert counterparty.party_name == "Delta Revised"
+        assert counterparty.email == "delta.revised@example.com"
+        assert counterparty.balance == "5000"
+        assert counterparty.status == "non_compliant"
+        assert {field.field_name for field in fields} >= set(payload["columns"])
+        assert next(field for field in fields if field.field_name == "Custom Ref").field_value == "D-10"
+        assert row_after_update["document_status"] == "not generated"
+        assert row_after_update["mail_status"] == "not generated"
+        assert jobs == []
+        assert emails == []
+
+        delete_message = controller.delete_counterparty(created["id"], quarter_id, delta_id)
+        rows_after_delete = controller.quarter_counterparty_statuses(quarter_id)
+        with Session(controller.engine) as session:
+            deleted = session.get(Counterparty, delta_id)
+            deleted_fields = session.exec(select(CounterpartyField).where(CounterpartyField.counterparty_id == delta_id)).all()
+
+        assert delete_message.startswith("Deleted counterparty:")
+        assert deleted is None
+        assert deleted_fields == []
+        assert [row["party_name"] for row in rows_after_delete] == ["Alpha Finance", "Beta Bank"]
+    finally:
+        controller.close()
+
+
+def test_modern_controller_counterparty_crud_is_scoped_to_client_and_quarter(tmp_path: Path) -> None:
+    controller = ModernComplianceController(tmp_path / "modern.db")
+    workbook_path = _sample_workbook(tmp_path)
+    try:
+        client_a = controller.create_client_record("Client A")
+        controller.create_quarter(client_a["id"], "2026-27", "Q1")
+        quarter_a = controller.current_quarter_id_for_client(client_a["id"])
+        controller.import_workbook(quarter_a, str(workbook_path), client_id=client_a["id"])
+
+        client_b = controller.create_client_record("Client B")
+        controller.create_quarter(client_b["id"], "2026-27", "Q1")
+        quarter_b = controller.current_quarter_id_for_client(client_b["id"])
+        controller.import_workbook(quarter_b, str(workbook_path), client_id=client_b["id"])
+
+        row_a_id = controller.quarter_counterparty_statuses(quarter_a)[0]["counterparty_id"]
+        row_b_id = controller.quarter_counterparty_statuses(quarter_b)[0]["counterparty_id"]
+
+        with pytest.raises(ValueError, match="does not belong to this client"):
+            controller.counterparty_form_payload(client_b["id"], quarter_a, int(row_a_id))
+        with pytest.raises(ValueError, match="does not belong to the active client quarter"):
+            controller.update_counterparty(
+                client_b["id"],
+                quarter_b,
+                int(row_a_id),
+                {
+                    "Party Type": "Creditor",
+                    "Party Name": "Cross Scope",
+                    "Email To(Address)": "cross@example.com",
+                    "Balance": "1",
+                    "Custom Ref": "X-1",
+                },
+            )
+        with pytest.raises(ValueError, match="does not belong to the active client quarter"):
+            controller.delete_counterparty(client_a["id"], quarter_a, int(row_b_id))
+    finally:
+        controller.close()
+
+
+def test_modern_controller_counterparty_create_requires_excel_schema_import(tmp_path: Path) -> None:
+    controller = ModernComplianceController(tmp_path / "modern.db")
+    try:
+        created = controller.create_client_record("Client A")
+        controller.create_quarter(created["id"], "2026-27", "Q1")
+        quarter_id = controller.current_quarter_id_for_client(created["id"])
+
+        with pytest.raises(ValueError, match="Import Excel for this quarter"):
+            controller.counterparty_form_payload(created["id"], quarter_id)
+        with pytest.raises(ValueError, match="Import Excel for this quarter"):
+            controller.create_counterparty(
+                created["id"],
+                quarter_id,
+                {
+                    "Party Type": "Creditor",
+                    "Party Name": "Manual Row",
+                    "Email To(Address)": "manual@example.com",
+                    "Balance": "100",
+                },
+            )
+    finally:
+        controller.close()
+
+
 def test_document_templates_support_new_excel_columns_without_manual_mapping(tmp_path: Path) -> None:
     engine = init_db(tmp_path / "compliance.db")
     workbook_path = _type_workbook(tmp_path)
